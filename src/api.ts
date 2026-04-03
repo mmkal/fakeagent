@@ -49,6 +49,10 @@ export interface ParsedRequest {
   openai: ParsedProtocol | null
   /** Non-null if this is an Anthropic messages request (/v1/messages) */
   anthropic: ParsedProtocol | null
+  /** Last user message from whichever protocol was detected */
+  lastMessage: string
+  /** Return a text response in the correct format for the detected protocol */
+  respond: {text(content: string): Response}
   /** The raw parsed body */
   body: any
 }
@@ -59,6 +63,7 @@ function extractText(content: any): string {
   return ''
 }
 
+/** Just a helper which does basic parsing of (some) common API requests and gives you a few helpers for matching and responding. You could trivially do this yourself though. */
 export async function parseRequest(request: Request): Promise<ParsedRequest> {
   const text = await request.text()
   const body: any = text ? JSON.parse(text) : {}
@@ -72,10 +77,13 @@ export async function parseRequest(request: Request): Promise<ParsedRequest> {
   const isOpenAI = path.includes('/v1/chat/completions')
 
   const protocol: ParsedProtocol = {lastMessage}
+  const respond = isAnthropic ? responses.anthropic : responses.openai
 
   return {
     openai: isOpenAI ? protocol : null,
     anthropic: isAnthropic ? protocol : null,
+    lastMessage,
+    respond,
     body,
   }
 }

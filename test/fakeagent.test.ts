@@ -237,6 +237,45 @@ test('matches only matches the last user message, not conversation history', asy
   expect(res2.status).toBe(400)
 })
 
+test('parsed.lastMessage and parsed.respond work across protocols', async () => {
+  await using api = await createFakeAgent({
+    port: 0,
+    async fetch(request) {
+      const parsed = await parseRequest(request)
+      if (parsed.lastMessage.match(/one plus two/)) {
+        return parsed.respond.text('three')
+      }
+      return Response.json({error: {message: 'no match'}}, {status: 400})
+    },
+  })
+
+  // OpenAI request gets OpenAI-format response
+  const openaiRes = await fetch(`http://localhost:${api.port}/v1/chat/completions`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({model: 'gpt', messages: [{role: 'user', content: 'one plus two'}]}),
+  })
+  expect(openaiRes.status).toBe(200)
+  expect(await openaiRes.json()).toMatchObject({choices: [{message: {content: 'three'}}]})
+
+  // Anthropic request gets Anthropic-format response
+  const anthropicRes = await fetch(`http://localhost:${api.port}/v1/messages`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({model: 'claude', messages: [{role: 'user', content: 'one plus two'}]}),
+  })
+  expect(anthropicRes.status).toBe(200)
+  expect(await anthropicRes.json()).toMatchObject({type: 'message', content: [{text: 'three'}]})
+
+  // Non-matching gets 400 regardless of protocol
+  const noMatch = await fetch(`http://localhost:${api.port}/v1/messages`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({model: 'claude', messages: [{role: 'user', content: 'hello'}]}),
+  })
+  expect(noMatch.status).toBe(400)
+})
+
 test('getSpawnArgs returns command and env for agent', async () => {
   await using api = await createFakeAgent({
     port: 0,

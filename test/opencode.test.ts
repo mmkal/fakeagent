@@ -1,9 +1,12 @@
 import {test, expect} from 'vitest'
 import {spawn} from 'node:child_process'
-import {createFakeAgent, parseRequest, responses} from '../src/index.ts'
+import {createFakeAgent, parseRequest} from '../src/index.ts'
 import {waitForExit} from './helpers/spawn.ts'
 
-const catchAll = () => responses.openai.text('three')
+const catchAll = async (request: Request) => {
+  const parsed = await parseRequest(request)
+  return parsed.respond.text('three')
+}
 
 test('opencode run hits fakeagent server and gets registered response', async () => {
   await using api = await createFakeAgent({port: 0, fetch: catchAll})
