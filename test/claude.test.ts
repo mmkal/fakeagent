@@ -3,30 +3,33 @@ import {spawn} from 'node:child_process'
 import {createFakeAgent, responses} from '../src/index.ts'
 import {waitForExit} from './helpers/spawn.ts'
 
-const catchAll = () => responses.openai.text('three')
+const catchAll = () => responses.anthropic.text('three')
 
-test('opencode run hits fakeagent server and gets registered response', async () => {
+test('claude -p hits fakeagent server and gets registered response', async () => {
   await using api = await createFakeAgent({port: 0, fetch: catchAll})
 
-  const child = api.spawn('opencode', ['run', 'what is one plus two', '--format', 'json', '--pure'], {
+  const child = api.spawn('claude', ['-p', 'what is one plus two', '--output-format', 'json', '--bare', '--no-session-persistence'], {
     cwd: '/tmp/fakeagent-test',
   })
 
-  const {exitCode, stdout, stderr} = await waitForExit(child, 5_000)
+  const {exitCode, stdout, stderr} = await waitForExit(child, 10_000)
 
   expect(exitCode, `stderr: ${stderr.slice(-500)}`).toBe(0)
-  expect(stdout).toContain('"text":"three"')
-}, 10_000)
 
-test('opencode TUI receives fakeagent response', async () => {
+  const result = JSON.parse(stdout)
+  expect(result.result).toContain('three')
+}, 15_000)
+
+test('claude TUI receives fakeagent response', async () => {
   await using api = await createFakeAgent({port: 0, fetch: catchAll})
-  const {env} = api.getSpawnArgs('opencode')
+  const {env} = api.getSpawnArgs('claude')
 
   const child = spawn('bun', ['test/helpers/tui-test-runner.ts'], {
     env: {
       ...process.env, ...env,
-      PTY_COMMAND: 'opencode',
-      PTY_SUBMIT: 'lf-cr',
+      PTY_COMMAND: 'claude',
+      PTY_ARGS: JSON.stringify(['--bare']),
+      PTY_SUBMIT: 'cr',
       PTY_WAIT_FOR: 'three',
     },
     stdio: ['ignore', 'pipe', 'pipe'],

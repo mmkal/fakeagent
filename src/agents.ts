@@ -46,6 +46,17 @@ export const agents = {
       }
     },
   },
+  claude: {
+    command: 'claude',
+    getEnv(port) {
+      return {
+        ANTHROPIC_BASE_URL: `http://localhost:${port}`,
+        ANTHROPIC_API_KEY: 'fake-key',
+        // Disable workspace trust dialog, MCP, hooks, etc. for fast isolated startup
+        CLAUDE_CODE_DISABLE_NONESSENTIAL: '1',
+      }
+    },
+  },
 } satisfies Record<string, AgentConfig>
 
 export type AgentName = keyof typeof agents

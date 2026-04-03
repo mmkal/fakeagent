@@ -16,32 +16,33 @@ export interface FakeAgent extends AsyncDisposable {
   createCli(): {run(argv?: string[]): ChildProcess}
 }
 
-export interface OpenAIResponse {
-  id: string
-  object: string
-  created: number
-  model: string
-  choices: Array<{
-    index: number
-    message: {role: string; content: string}
-    finish_reason: string
-  }>
-  usage: {prompt_tokens: number; completion_tokens: number; total_tokens: number}
-}
-
 export const responses = {
   openai: {
-    /** Return a chat completion response. The server auto-converts to SSE when the client requests streaming. */
+    /** Return an OpenAI chat completion response. Auto-converted to SSE when the client requests streaming. */
     text(content: string): Response {
-      const body: OpenAIResponse = {
+      return Response.json({
         id: `chatcmpl-fake-${Date.now()}`,
         object: 'chat.completion',
         created: Math.floor(Date.now() / 1000),
         model: 'fake-model',
         choices: [{index: 0, message: {role: 'assistant', content}, finish_reason: 'stop'}],
         usage: {prompt_tokens: 0, completion_tokens: 0, total_tokens: 0},
-      }
-      return Response.json(body)
+      })
+    },
+  },
+  anthropic: {
+    /** Return an Anthropic Messages API response. Auto-converted to SSE when the client requests streaming. */
+    text(content: string): Response {
+      return Response.json({
+        id: `msg_fake_${Date.now()}`,
+        type: 'message',
+        role: 'assistant',
+        content: [{type: 'text', text: content}],
+        model: 'claude-sonnet-4-20250514',
+        stop_reason: 'end_turn',
+        stop_sequence: null,
+        usage: {input_tokens: 0, output_tokens: 0},
+      })
     },
   },
 }
@@ -64,6 +65,46 @@ export interface CreateFakeAgentOptions {
   fetch(request: Request): Response | Promise<Response>
 }
 
+function sseResponse(events: Array<{event?: string; data: string}>): Response {
+  const encoder = new TextEncoder()
+  const stream = new ReadableStream({
+    start(controller) {
+      for (const {event, data} of events) {
+        if (event) controller.enqueue(encoder.encode(`event: ${event}\n`))
+        controller.enqueue(encoder.encode(`data: ${data}\n\n`))
+      }
+      controller.close()
+    },
+  })
+  return new Response(stream, {
+    headers: {'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive'},
+  })
+}
+
+function jsonToSSE(json: any): Response {
+  // Anthropic Messages API format (has .type === 'message')
+  if (json.type === 'message') {
+    const content = json.content?.[0]?.text ?? ''
+    return sseResponse([
+      {event: 'message_start', data: JSON.stringify({type: 'message_start', message: {...json, content: [], usage: {input_tokens: json.usage?.input_tokens ?? 0, output_tokens: 1}}})},
+      {event: 'content_block_start', data: JSON.stringify({type: 'content_block_start', index: 0, content_block: {type: 'text', text: ''}})},
+      {event: 'ping', data: JSON.stringify({type: 'ping'})},
+      {event: 'content_block_delta', data: JSON.stringify({type: 'content_block_delta', index: 0, delta: {type: 'text_delta', text: content}})},
+      {event: 'content_block_stop', data: JSON.stringify({type: 'content_block_stop', index: 0})},
+      {event: 'message_delta', data: JSON.stringify({type: 'message_delta', delta: {stop_reason: 'end_turn', stop_sequence: null}, usage: {output_tokens: json.usage?.output_tokens ?? 0}})},
+      {event: 'message_stop', data: JSON.stringify({type: 'message_stop'})},
+    ])
+  }
+
+  // OpenAI Chat Completions format (has .choices)
+  const content = json.choices?.[0]?.message?.content ?? ''
+  return sseResponse([
+    {data: JSON.stringify({id: json.id, object: 'chat.completion.chunk', created: json.created, model: json.model, choices: [{index: 0, delta: {role: 'assistant', content}, finish_reason: null}]})},
+    {data: JSON.stringify({id: json.id, object: 'chat.completion.chunk', created: json.created, model: json.model, choices: [{index: 0, delta: {}, finish_reason: 'stop'}], usage: json.usage})},
+    {data: '[DONE]'},
+  ])
+}
+
 export async function createFakeAgent(options: CreateFakeAgentOptions): Promise<FakeAgent> {
   const server = http.createServer(async (req, res) => {
     try {
@@ -82,33 +123,14 @@ export async function createFakeAgent(options: CreateFakeAgentOptions): Promise<
 
       let response = await options.fetch(request)
 
-      // Auto-convert JSON chat completion responses to SSE when the client requested streaming.
-      // This lets fetch handlers return plain responses.openai.text() without worrying about streaming.
+      // Auto-convert JSON responses to SSE when the client requested streaming.
+      // This lets fetch handlers return plain responses.openai.text() or responses.anthropic.text()
+      // without worrying about streaming wire formats.
       const isStreamRequest = body.includes('"stream":true') || body.includes('"stream": true')
       const isJsonResponse = response.headers.get('content-type')?.includes('application/json')
       if (isStreamRequest && isJsonResponse && response.ok) {
-        const json = await response.json() as OpenAIResponse
-        const content = json.choices?.[0]?.message?.content ?? ''
-        const encoder = new TextEncoder()
-        const chunk = JSON.stringify({
-          id: json.id, object: 'chat.completion.chunk', created: json.created, model: json.model,
-          choices: [{index: 0, delta: {role: 'assistant', content}, finish_reason: null}],
-        })
-        const done = JSON.stringify({
-          id: json.id, object: 'chat.completion.chunk', created: json.created, model: json.model,
-          choices: [{index: 0, delta: {}, finish_reason: 'stop'}], usage: json.usage,
-        })
-        const stream = new ReadableStream({
-          start(controller) {
-            controller.enqueue(encoder.encode(`data: ${chunk}\n\n`))
-            controller.enqueue(encoder.encode(`data: ${done}\n\n`))
-            controller.enqueue(encoder.encode('data: [DONE]\n\n'))
-            controller.close()
-          },
-        })
-        response = new Response(stream, {
-          headers: {'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive'},
-        })
+        const json = await response.json() as any
+        response = jsonToSSE(json)
       }
 
       // Convert standard Response back to node response
