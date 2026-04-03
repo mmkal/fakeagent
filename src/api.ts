@@ -85,7 +85,12 @@ export interface ParsedRequest {
 
 function extractText(content: any): string {
   if (typeof content === 'string') return content
-  if (Array.isArray(content)) return content.filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n')
+  if (Array.isArray(content)) {
+    return content
+      .filter((b: any) => b.type === 'text' || b.type === 'input_text' || b.type === 'output_text')
+      .map((b: any) => b.text)
+      .join('\n')
+  }
   return ''
 }
 
@@ -254,6 +259,20 @@ export async function createFakeAgent(options: CreateFakeAgentOptions): Promise<
           body: JSON.stringify(body),
         })
         const response = await options.fetch(request)
+
+        if (!response.ok) {
+          const errBody = await response.text()
+          const id = `resp_err_${Date.now()}`
+          const errResponse = {
+            id, object: 'response', status: 'failed',
+            output: [], usage: {input_tokens: 0, output_tokens: 0, total_tokens: 0},
+            error: {type: 'invalid_request_error', code: 'invalid_prompt', message: errBody},
+          }
+          ws.send(JSON.stringify({type: 'response.created', response: {...errResponse, status: 'in_progress'}}))
+          ws.send(JSON.stringify({type: 'response.failed', response: errResponse}))
+          return
+        }
+
         const json = await response.json() as any
 
         // Send Responses API streaming events as individual WS messages
@@ -261,18 +280,18 @@ export async function createFakeAgent(options: CreateFakeAgentOptions): Promise<
         const msgId = json.output?.[0]?.id ?? `msg_fake_${Date.now()}`
         const inProgressResponse = {...json, status: 'in_progress', output: []}
         const events = [
-          {event: 'response.created', data: {type: 'response.created', response: inProgressResponse}},
-          {event: 'response.in_progress', data: {type: 'response.in_progress', response: inProgressResponse}},
-          {event: 'response.output_item.added', data: {type: 'response.output_item.added', output_index: 0, item: {type: 'message', role: 'assistant', id: msgId, content: []}}},
-          {event: 'response.content_part.added', data: {type: 'response.content_part.added', item_id: msgId, output_index: 0, content_index: 0, part: {type: 'output_text', text: ''}}},
-          {event: 'response.output_text.delta', data: {type: 'response.output_text.delta', item_id: msgId, output_index: 0, content_index: 0, delta: content}},
-          {event: 'response.output_text.done', data: {type: 'response.output_text.done', item_id: msgId, output_index: 0, content_index: 0, text: content}},
-          {event: 'response.content_part.done', data: {type: 'response.content_part.done', item_id: msgId, output_index: 0, content_index: 0, part: {type: 'output_text', text: content}}},
-          {event: 'response.output_item.done', data: {type: 'response.output_item.done', output_index: 0, item: {type: 'message', role: 'assistant', id: msgId, content: [{type: 'output_text', text: content}]}}},
-          {event: 'response.completed', data: {type: 'response.completed', response: json}},
+          {type: 'response.created', response: inProgressResponse},
+          {type: 'response.in_progress', response: inProgressResponse},
+          {type: 'response.output_item.added', output_index: 0, item: {type: 'message', role: 'assistant', id: msgId, content: []}},
+          {type: 'response.content_part.added', item_id: msgId, output_index: 0, content_index: 0, part: {type: 'output_text', text: ''}},
+          {type: 'response.output_text.delta', item_id: msgId, output_index: 0, content_index: 0, delta: content},
+          {type: 'response.output_text.done', item_id: msgId, output_index: 0, content_index: 0, text: content},
+          {type: 'response.content_part.done', item_id: msgId, output_index: 0, content_index: 0, part: {type: 'output_text', text: content}},
+          {type: 'response.output_item.done', output_index: 0, item: {type: 'message', role: 'assistant', id: msgId, content: [{type: 'output_text', text: content}]}},
+          {type: 'response.completed', response: json},
         ]
         for (const e of events) {
-          ws.send(JSON.stringify(e.data))
+          ws.send(JSON.stringify(e))
         }
       } catch (err) {
         ws.send(JSON.stringify({type: 'error', message: String(err)}))
