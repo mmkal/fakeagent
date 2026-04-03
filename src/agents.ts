@@ -72,7 +72,7 @@ export const agents = {
         `model = "gpt-5.4"`,
         `openai_base_url = "http://localhost:${port}/v1"`,
         `check_for_update_on_startup = false`,
-        ...trustedPaths.flatMap((p) => ['', `[projects."${p}"]`, `trust_level = "trusted"`]),
+        ...trustedPaths.flatMap((p) => ['', `[projects.${JSON.stringify(p)}]`, `trust_level = "trusted"`]),
       ].join('\n') + '\n')
       writeFileSync(`${dir}/auth.json`, JSON.stringify({OPENAI_API_KEY: 'fake-key'}))
       return {

@@ -1,14 +1,30 @@
 {
   "name": "fakeagent",
   "version": "0.0.0",
-  "description": "",
+  "description": "Fake API server for testing tools that use coding agent CLIs",
   "type": "module",
-  "main": "index.js",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "publishConfig": {
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    }
+  },
+  "files": ["dist", "src"],
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepare": "pnpm build",
     "test": "vitest run"
   },
-  "keywords": [],
-  "author": "",
+  "keywords": ["testing", "agent", "cli", "claude", "codex", "opencode", "fake", "mock"],
+  "author": "mmkal",
   "license": "ISC",
   "packageManager": "pnpm@10.30.1",
   "devDependencies": {
