@@ -1,4 +1,5 @@
 import * as http from 'node:http'
+import type {SpawnOptions} from 'node:child_process'
 import {agents, type AgentName} from './agents'
 
 export interface FakeAgentApi extends AsyncDisposable {
@@ -6,7 +7,7 @@ export interface FakeAgentApi extends AsyncDisposable {
   register(pattern: RegExp, handler: () => OpenAIResponse): void
   responses: typeof responses
   getAgentEnv(agent: AgentName): Record<string, string>
-  getSpawnArgs(agent: AgentName): {command: string; args: string[]; env: Record<string, string>}
+  getSpawnArgs(agent: AgentName): {command: string; args: string[]; env: Record<string, string>; spawnOptions: SpawnOptions}
 }
 
 export interface OpenAIResponse {
@@ -73,8 +74,37 @@ export async function getFakeAgentApi(options: {port?: number} = {}): Promise<Fa
           }
 
           const response = match.handler()
-          res.writeHead(200, {'Content-Type': 'application/json'})
-          res.end(JSON.stringify(response))
+          const content = response.choices[0]?.message.content ?? ''
+
+          if (parsed.stream) {
+            res.writeHead(200, {
+              'Content-Type': 'text/event-stream',
+              'Cache-Control': 'no-cache',
+              Connection: 'keep-alive',
+            })
+            const chunk = {
+              id: response.id,
+              object: 'chat.completion.chunk',
+              created: response.created,
+              model: response.model,
+              choices: [{index: 0, delta: {role: 'assistant', content}, finish_reason: null}],
+            }
+            res.write(`data: ${JSON.stringify(chunk)}\n\n`)
+            const done = {
+              id: response.id,
+              object: 'chat.completion.chunk',
+              created: response.created,
+              model: response.model,
+              choices: [{index: 0, delta: {}, finish_reason: 'stop'}],
+              usage: response.usage,
+            }
+            res.write(`data: ${JSON.stringify(done)}\n\n`)
+            res.write('data: [DONE]\n\n')
+            res.end()
+          } else {
+            res.writeHead(200, {'Content-Type': 'application/json'})
+            res.end(JSON.stringify(response))
+          }
         } catch (err) {
           res.writeHead(500, {'Content-Type': 'application/json'})
           res.end(JSON.stringify({error: {message: String(err)}}))
@@ -110,6 +140,7 @@ export async function getFakeAgentApi(options: {port?: number} = {}): Promise<Fa
         command: agentConfig.command,
         args: agentConfig.args ?? [],
         env: agentConfig.getEnv(port),
+        spawnOptions: agentConfig.spawnOptions ?? {},
       }
     },
     async [Symbol.asyncDispose]() {

@@ -1,12 +1,17 @@
+import type {SpawnOptions} from 'node:child_process'
+
 export interface AgentConfig {
   command: string
   args?: string[]
+  spawnOptions?: SpawnOptions
   getEnv(port: number): Record<string, string>
 }
 
 export const agents = {
   opencode: {
     command: 'opencode',
+    // stdin must be ignored — opencode reads stdin to EOF when it's not a TTY, causing hangs
+    spawnOptions: {stdio: ['ignore', 'pipe', 'pipe']},
     getEnv(port) {
       const config = {
         provider: {
@@ -28,11 +33,16 @@ export const agents = {
           },
         },
         model: 'fakeagent/fake-model',
+        // Disable MCP servers to avoid spending seconds connecting to user's configured servers
+        mcp: {},
       }
       return {
         OPENCODE_CONFIG_CONTENT: JSON.stringify(config),
         ANTHROPIC_API_KEY: 'fake-key',
         OPENAI_API_KEY: 'fake-key',
+        // Isolate from user's global config (MCP servers, plugins, etc.) and database
+        XDG_CONFIG_HOME: '/tmp/fakeagent-opencode-config',
+        XDG_DATA_HOME: '/tmp/fakeagent-opencode-data',
       }
     },
   },
