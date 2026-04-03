@@ -280,3 +280,49 @@ test('getSpawnArgs returns command and env for agent', async () => {
   expect(claude.command).toBe('claude')
   expect(claude.env.ANTHROPIC_BASE_URL).toBe(`http://localhost:${api.port}`)
 })
+
+test('respond.toolCall returns correct format per protocol', async () => {
+  await using api = await createFakeAgent({
+    async fetch(request) {
+      const parsed = await parseRequest(request)
+      return parsed.respond.toolCall('read_file', {path: '/tmp/foo.txt'})
+    },
+  })
+
+  // OpenAI
+  const openaiRes = await fetch(`http://localhost:${api.port}/v1/chat/completions`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({model: 'gpt', messages: [{role: 'user', content: 'read foo'}]}),
+  })
+  const openaiData = await openaiRes.json()
+  expect(openaiData).toMatchObject({
+    choices: [{
+      message: {tool_calls: [{type: 'function', function: {name: 'read_file', arguments: '{"path":"/tmp/foo.txt"}'}}]},
+      finish_reason: 'tool_calls',
+    }],
+  })
+
+  // Anthropic
+  const anthropicRes = await fetch(`http://localhost:${api.port}/v1/messages`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({model: 'claude', messages: [{role: 'user', content: 'read foo'}]}),
+  })
+  const anthropicData = await anthropicRes.json()
+  expect(anthropicData).toMatchObject({
+    content: [{type: 'tool_use', name: 'read_file', input: {path: '/tmp/foo.txt'}}],
+    stop_reason: 'tool_use',
+  })
+
+  // Codex
+  const codexRes = await fetch(`http://localhost:${api.port}/v1/responses`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({model: 'gpt', input: [{role: 'user', content: 'read foo'}]}),
+  })
+  const codexData = await codexRes.json()
+  expect(codexData).toMatchObject({
+    output: [{type: 'function_call', name: 'read_file', arguments: '{"path":"/tmp/foo.txt"}'}],
+  })
+})

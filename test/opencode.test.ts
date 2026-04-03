@@ -2,7 +2,7 @@ import {test, expect} from 'vitest'
 import {createFakeAgent, parseRequest} from '../src/index.ts'
 import {waitForExit, spawnTui} from './helpers/index.ts'
 
-test('opencode run hits fakeagent server and gets registered response', async () => {
+test('opencode run gets fake response', async () => {
   await using api = await createFakeAgent({
     async fetch(request) {
       const parsed = await parseRequest(request)
@@ -15,12 +15,11 @@ test('opencode run hits fakeagent server and gets registered response', async ()
   })
 
   const {exitCode, stdout, stderr} = await waitForExit(child, 5_000)
-
   expect(exitCode, `stderr: ${stderr.slice(-500)}`).toBe(0)
   expect(stdout).toContain('"text":"three"')
 }, 10_000)
 
-test('opencode TUI receives fakeagent response', async () => {
+test('opencode TUI text response', async () => {
   await using api = await createFakeAgent({
     async fetch(request) {
       const parsed = await parseRequest(request)
@@ -33,3 +32,24 @@ test('opencode TUI receives fakeagent response', async () => {
   await tui.send('what is one plus two')
   await tui.waitFor('three')
 }, 20_000)
+
+test.skip('opencode TUI tool use', async () => {
+  await using api = await createFakeAgent({
+    async fetch(request) {
+      const parsed = await parseRequest(request)
+      if (parsed.lastMessage.match(/read hello/)) {
+        return parsed.respond.toolCall('read', {filePath: '/tmp/fakeagent-test/hello.txt'})
+      }
+      const hasToolResult = parsed.body.messages?.some((m: any) => m.role === 'tool')
+      if (hasToolResult) {
+        return parsed.respond.text('the file says hi')
+      }
+      return Response.json({error: 'no match'}, {status: 400})
+    },
+  })
+
+  await using tui = await spawnTui(api, 'opencode', {submit: 'lf-cr'})
+  await tui.waitFor('Ask anything')
+  await tui.send('read hello.txt')
+  await tui.waitFor('the file says hi')
+}, 25_000)

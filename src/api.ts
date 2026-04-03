@@ -12,7 +12,6 @@ export interface FakeAgent extends AsyncDisposable {
 
 export const responses = {
   openai: {
-    /** Return an OpenAI chat completion response. Auto-converted to SSE when the client requests streaming. */
     text(content: string): Response {
       return Response.json({
         id: `chatcmpl-fake-${Date.now()}`,
@@ -23,9 +22,25 @@ export const responses = {
         usage: {prompt_tokens: 0, completion_tokens: 0, total_tokens: 0},
       })
     },
+    toolCall(name: string, args: Record<string, unknown>, callId = `call_fake_${Date.now()}`): Response {
+      return Response.json({
+        id: `chatcmpl-fake-${Date.now()}`,
+        object: 'chat.completion',
+        created: Math.floor(Date.now() / 1000),
+        model: 'fake-model',
+        choices: [{
+          index: 0,
+          message: {
+            role: 'assistant',
+            tool_calls: [{id: callId, type: 'function', function: {name, arguments: JSON.stringify(args)}}],
+          },
+          finish_reason: 'tool_calls',
+        }],
+        usage: {prompt_tokens: 0, completion_tokens: 0, total_tokens: 0},
+      })
+    },
   },
   anthropic: {
-    /** Return an Anthropic Messages API response. Auto-converted to SSE when the client requests streaming. */
     text(content: string): Response {
       return Response.json({
         id: `msg_fake_${Date.now()}`,
@@ -38,9 +53,20 @@ export const responses = {
         usage: {input_tokens: 0, output_tokens: 0},
       })
     },
+    toolUse(name: string, input: Record<string, unknown>, toolUseId = `toolu_fake_${Date.now()}`): Response {
+      return Response.json({
+        id: `msg_fake_${Date.now()}`,
+        type: 'message',
+        role: 'assistant',
+        content: [{type: 'tool_use', id: toolUseId, name, input}],
+        model: 'claude-sonnet-4-20250514',
+        stop_reason: 'tool_use',
+        stop_sequence: null,
+        usage: {input_tokens: 0, output_tokens: 0},
+      })
+    },
   },
   codex: {
-    /** Return an OpenAI Responses API response. Auto-converted to SSE when the client requests streaming. */
     text(content: string): Response {
       const id = `resp_fake_${Date.now()}`
       const msgId = `msg_fake_${Date.now()}`
@@ -55,6 +81,26 @@ export const responses = {
           role: 'assistant',
           id: msgId,
           content: [{type: 'output_text', text: content}],
+        }],
+        usage: {input_tokens: 0, output_tokens: 0, total_tokens: 0},
+        error: null,
+        incomplete_details: null,
+      })
+    },
+    functionCall(name: string, args: Record<string, unknown>, callId = `call_fake_${Date.now()}`): Response {
+      const id = `resp_fake_${Date.now()}`
+      return Response.json({
+        id,
+        object: 'response',
+        created_at: Math.floor(Date.now() / 1000),
+        model: 'fake-model',
+        status: 'completed',
+        output: [{
+          id: `item_fake_${Date.now()}`,
+          type: 'function_call',
+          call_id: callId,
+          name,
+          arguments: JSON.stringify(args),
         }],
         usage: {input_tokens: 0, output_tokens: 0, total_tokens: 0},
         error: null,
@@ -77,8 +123,11 @@ export interface ParsedRequest {
   codex: ParsedProtocol | null
   /** Last user message from whichever protocol was detected */
   lastMessage: string
-  /** Return a text response in the correct format for the detected protocol */
-  respond: {text(content: string): Response}
+  /** Return a response in the correct format for the detected protocol */
+  respond: {
+    text(content: string): Response
+    toolCall(name: string, args: Record<string, unknown>): Response
+  }
   /** The raw parsed body */
   body: any
 }
@@ -113,7 +162,14 @@ export async function parseRequest(request: Request): Promise<ParsedRequest> {
   const lastMessage = lastUserMessage ? extractText(lastUserMessage.content) : ''
 
   const protocol: ParsedProtocol = {lastMessage}
-  const respond = isAnthropic ? responses.anthropic : isCodex ? responses.codex : responses.openai
+  const proto = isAnthropic ? responses.anthropic : isCodex ? responses.codex : responses.openai
+  const respond = {
+    text: (content: string) => proto.text(content),
+    toolCall: (name: string, args: Record<string, unknown>) =>
+      isAnthropic ? responses.anthropic.toolUse(name, args)
+        : isCodex ? responses.codex.functionCall(name, args)
+        : responses.openai.toolCall(name, args),
+  }
 
   return {
     openai: isOpenAI ? protocol : null,
@@ -146,45 +202,80 @@ function sseResponse(events: Array<{event?: string; data: string}>): Response {
   })
 }
 
+function responsesApiEvents(json: any): Array<{event: string; data: string}> {
+  const inProgressResponse = {...json, status: 'in_progress', output: []}
+  const events: Array<{event: string; data: string}> = [
+    {event: 'response.created', data: JSON.stringify({type: 'response.created', response: inProgressResponse})},
+    {event: 'response.in_progress', data: JSON.stringify({type: 'response.in_progress', response: inProgressResponse})},
+  ]
+  for (let i = 0; i < (json.output?.length ?? 0); i++) {
+    const item = json.output[i]
+    if (item.type === 'function_call') {
+      events.push({event: 'response.output_item.added', data: JSON.stringify({type: 'response.output_item.added', output_index: i, item: {...item, arguments: ''}})})
+      events.push({event: 'response.function_call_arguments.delta', data: JSON.stringify({type: 'response.function_call_arguments.delta', item_id: item.id, output_index: i, delta: item.arguments})})
+      events.push({event: 'response.function_call_arguments.done', data: JSON.stringify({type: 'response.function_call_arguments.done', item_id: item.id, output_index: i, arguments: item.arguments})})
+      events.push({event: 'response.output_item.done', data: JSON.stringify({type: 'response.output_item.done', output_index: i, item})})
+    } else {
+      const content = item.content?.[0]?.text ?? ''
+      const msgId = item.id ?? `msg_fake_${Date.now()}`
+      events.push({event: 'response.output_item.added', data: JSON.stringify({type: 'response.output_item.added', output_index: i, item: {type: 'message', role: 'assistant', id: msgId, content: []}})})
+      events.push({event: 'response.content_part.added', data: JSON.stringify({type: 'response.content_part.added', item_id: msgId, output_index: i, content_index: 0, part: {type: 'output_text', text: ''}})})
+      events.push({event: 'response.output_text.delta', data: JSON.stringify({type: 'response.output_text.delta', item_id: msgId, output_index: i, content_index: 0, delta: content})})
+      events.push({event: 'response.output_text.done', data: JSON.stringify({type: 'response.output_text.done', item_id: msgId, output_index: i, content_index: 0, text: content})})
+      events.push({event: 'response.content_part.done', data: JSON.stringify({type: 'response.content_part.done', item_id: msgId, output_index: i, content_index: 0, part: {type: 'output_text', text: content}})})
+      events.push({event: 'response.output_item.done', data: JSON.stringify({type: 'response.output_item.done', output_index: i, item})})
+    }
+  }
+  events.push({event: 'response.completed', data: JSON.stringify({type: 'response.completed', response: json})})
+  return events
+}
+
 function jsonToSSE(json: any): Response {
   // Anthropic Messages API format (has .type === 'message')
   if (json.type === 'message') {
-    const content = json.content?.[0]?.text ?? ''
-    return sseResponse([
+    const events: Array<{event: string; data: string}> = [
       {event: 'message_start', data: JSON.stringify({type: 'message_start', message: {...json, stop_reason: null, content: [], usage: {input_tokens: json.usage?.input_tokens ?? 0, output_tokens: 1}}})},
-      {event: 'content_block_start', data: JSON.stringify({type: 'content_block_start', index: 0, content_block: {type: 'text', text: ''}})},
-      {event: 'ping', data: JSON.stringify({type: 'ping'})},
-      {event: 'content_block_delta', data: JSON.stringify({type: 'content_block_delta', index: 0, delta: {type: 'text_delta', text: content}})},
-      {event: 'content_block_stop', data: JSON.stringify({type: 'content_block_stop', index: 0})},
-      {event: 'message_delta', data: JSON.stringify({type: 'message_delta', delta: {stop_reason: 'end_turn', stop_sequence: null}, usage: {output_tokens: json.usage?.output_tokens ?? 0}})},
-      {event: 'message_stop', data: JSON.stringify({type: 'message_stop'})},
-    ])
+    ]
+    const contentBlocks: any[] = json.content ?? []
+    for (let i = 0; i < contentBlocks.length; i++) {
+      const block = contentBlocks[i]
+      if (block.type === 'tool_use') {
+        events.push({event: 'content_block_start', data: JSON.stringify({type: 'content_block_start', index: i, content_block: {type: 'tool_use', id: block.id, name: block.name, input: {}}})})
+        events.push({event: 'content_block_delta', data: JSON.stringify({type: 'content_block_delta', index: i, delta: {type: 'input_json_delta', partial_json: JSON.stringify(block.input)}})})
+        events.push({event: 'content_block_stop', data: JSON.stringify({type: 'content_block_stop', index: i})})
+      } else {
+        events.push({event: 'content_block_start', data: JSON.stringify({type: 'content_block_start', index: i, content_block: {type: 'text', text: ''}})})
+        events.push({event: 'content_block_delta', data: JSON.stringify({type: 'content_block_delta', index: i, delta: {type: 'text_delta', text: block.text ?? ''}})})
+        events.push({event: 'content_block_stop', data: JSON.stringify({type: 'content_block_stop', index: i})})
+      }
+    }
+    if (contentBlocks.length === 0) {
+      events.push({event: 'content_block_start', data: JSON.stringify({type: 'content_block_start', index: 0, content_block: {type: 'text', text: ''}})})
+      events.push({event: 'content_block_stop', data: JSON.stringify({type: 'content_block_stop', index: 0})})
+    }
+    events.push({event: 'message_delta', data: JSON.stringify({type: 'message_delta', delta: {stop_reason: json.stop_reason ?? 'end_turn', stop_sequence: null}, usage: {output_tokens: json.usage?.output_tokens ?? 0}})})
+    events.push({event: 'message_stop', data: JSON.stringify({type: 'message_stop'})})
+    return sseResponse(events)
   }
 
   // OpenAI Responses API format (has .object === 'response')
   if (json.object === 'response') {
-    const content = json.output?.[0]?.content?.[0]?.text ?? ''
-    const msgId = json.output?.[0]?.id ?? `msg_fake_${Date.now()}`
-    const inProgressResponse = {...json, status: 'in_progress', output: []}
-    const completedResponse = json
-    return sseResponse([
-      {event: 'response.created', data: JSON.stringify({type: 'response.created', response: inProgressResponse})},
-      {event: 'response.in_progress', data: JSON.stringify({type: 'response.in_progress', response: inProgressResponse})},
-      {event: 'response.output_item.added', data: JSON.stringify({type: 'response.output_item.added', output_index: 0, item: {type: 'message', role: 'assistant', id: msgId, content: []}})},
-      {event: 'response.content_part.added', data: JSON.stringify({type: 'response.content_part.added', item_id: msgId, output_index: 0, content_index: 0, part: {type: 'output_text', text: ''}})},
-      {event: 'response.output_text.delta', data: JSON.stringify({type: 'response.output_text.delta', item_id: msgId, output_index: 0, content_index: 0, delta: content})},
-      {event: 'response.output_text.done', data: JSON.stringify({type: 'response.output_text.done', item_id: msgId, output_index: 0, content_index: 0, text: content})},
-      {event: 'response.content_part.done', data: JSON.stringify({type: 'response.content_part.done', item_id: msgId, output_index: 0, content_index: 0, part: {type: 'output_text', text: content}})},
-      {event: 'response.output_item.done', data: JSON.stringify({type: 'response.output_item.done', output_index: 0, item: {type: 'message', role: 'assistant', id: msgId, content: [{type: 'output_text', text: content}]}})},
-      {event: 'response.completed', data: JSON.stringify({type: 'response.completed', response: completedResponse})},
-    ])
+    return sseResponse(responsesApiEvents(json))
   }
 
   // OpenAI Chat Completions format (fallback)
-  const content = json.choices?.[0]?.message?.content ?? ''
+  const message = json.choices?.[0]?.message ?? {}
+  const finishReason = json.choices?.[0]?.finish_reason ?? 'stop'
+  if (message.tool_calls) {
+    return sseResponse([
+      {data: JSON.stringify({id: json.id, object: 'chat.completion.chunk', created: json.created, model: json.model, choices: [{index: 0, delta: {role: 'assistant', tool_calls: message.tool_calls}, finish_reason: null}]})},
+      {data: JSON.stringify({id: json.id, object: 'chat.completion.chunk', created: json.created, model: json.model, choices: [{index: 0, delta: {}, finish_reason: finishReason}], usage: json.usage})},
+      {data: '[DONE]'},
+    ])
+  }
   return sseResponse([
-    {data: JSON.stringify({id: json.id, object: 'chat.completion.chunk', created: json.created, model: json.model, choices: [{index: 0, delta: {role: 'assistant', content}, finish_reason: null}]})},
-    {data: JSON.stringify({id: json.id, object: 'chat.completion.chunk', created: json.created, model: json.model, choices: [{index: 0, delta: {}, finish_reason: 'stop'}], usage: json.usage})},
+    {data: JSON.stringify({id: json.id, object: 'chat.completion.chunk', created: json.created, model: json.model, choices: [{index: 0, delta: {role: 'assistant', content: message.content ?? ''}, finish_reason: null}]})},
+    {data: JSON.stringify({id: json.id, object: 'chat.completion.chunk', created: json.created, model: json.model, choices: [{index: 0, delta: {}, finish_reason: finishReason}], usage: json.usage})},
     {data: '[DONE]'},
   ])
 }
@@ -276,22 +367,8 @@ export async function createFakeAgent(options: CreateFakeAgentOptions): Promise<
         const json = await response.json() as any
 
         // Send Responses API streaming events as individual WS messages
-        const content = json.output?.[0]?.content?.[0]?.text ?? ''
-        const msgId = json.output?.[0]?.id ?? `msg_fake_${Date.now()}`
-        const inProgressResponse = {...json, status: 'in_progress', output: []}
-        const events = [
-          {type: 'response.created', response: inProgressResponse},
-          {type: 'response.in_progress', response: inProgressResponse},
-          {type: 'response.output_item.added', output_index: 0, item: {type: 'message', role: 'assistant', id: msgId, content: []}},
-          {type: 'response.content_part.added', item_id: msgId, output_index: 0, content_index: 0, part: {type: 'output_text', text: ''}},
-          {type: 'response.output_text.delta', item_id: msgId, output_index: 0, content_index: 0, delta: content},
-          {type: 'response.output_text.done', item_id: msgId, output_index: 0, content_index: 0, text: content},
-          {type: 'response.content_part.done', item_id: msgId, output_index: 0, content_index: 0, part: {type: 'output_text', text: content}},
-          {type: 'response.output_item.done', output_index: 0, item: {type: 'message', role: 'assistant', id: msgId, content: [{type: 'output_text', text: content}]}},
-          {type: 'response.completed', response: json},
-        ]
-        for (const e of events) {
-          ws.send(JSON.stringify(e))
+        for (const e of responsesApiEvents(json)) {
+          ws.send(e.data)
         }
       } catch (err) {
         ws.send(JSON.stringify({type: 'error', message: String(err)}))

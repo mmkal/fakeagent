@@ -41,6 +41,8 @@ export const agents = {
         OPENCODE_CONFIG_CONTENT: JSON.stringify(config),
         ANTHROPIC_API_KEY: 'fake-key',
         OPENAI_API_KEY: 'fake-key',
+        // Auto-allow all tool permissions so TUI tests don't get blocked by prompts
+        OPENCODE_PERMISSION: JSON.stringify({'*': 'allow'}),
         // Isolate from user's global config (MCP servers, plugins, etc.) and database
         XDG_CONFIG_HOME: '/tmp/fakeagent-opencode-config',
         XDG_DATA_HOME: '/tmp/fakeagent-opencode-data',

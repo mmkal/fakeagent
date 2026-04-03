@@ -2,7 +2,7 @@ import {test, expect} from 'vitest'
 import {createFakeAgent, parseRequest} from '../src/index.ts'
 import {waitForExit, spawnTui} from './helpers/index.ts'
 
-test('claude -p hits fakeagent server and gets registered response', async () => {
+test('claude -p gets fake response', async () => {
   await using api = await createFakeAgent({
     async fetch(request) {
       const parsed = await parseRequest(request)
@@ -15,14 +15,11 @@ test('claude -p hits fakeagent server and gets registered response', async () =>
   })
 
   const {exitCode, stdout, stderr} = await waitForExit(child, 10_000)
-
   expect(exitCode, `stderr: ${stderr.slice(-500)}`).toBe(0)
-
-  const result = JSON.parse(stdout)
-  expect(result.result).toContain('three')
+  expect(JSON.parse(stdout).result).toContain('three')
 }, 15_000)
 
-test('claude TUI receives fakeagent response', async () => {
+test('claude TUI text response', async () => {
   await using api = await createFakeAgent({
     async fetch(request) {
       const parsed = await parseRequest(request)
@@ -35,3 +32,26 @@ test('claude TUI receives fakeagent response', async () => {
   await tui.send('what is one plus two')
   await tui.waitFor('three')
 }, 20_000)
+
+test.skip('claude TUI tool use', async () => {
+  await using api = await createFakeAgent({
+    async fetch(request) {
+      const parsed = await parseRequest(request)
+      if (parsed.lastMessage.match(/read hello/)) {
+        return parsed.respond.toolCall('Read', {file_path: '/tmp/fakeagent-test/hello.txt'})
+      }
+      const hasToolResult = parsed.body.messages?.some((m: any) =>
+        Array.isArray(m.content) && m.content.some((c: any) => c.type === 'tool_result'),
+      )
+      if (hasToolResult) {
+        return parsed.respond.text('the file says hi')
+      }
+      return Response.json({error: 'no match'}, {status: 400})
+    },
+  })
+
+  await using tui = await spawnTui(api, 'claude')
+  await tui.waitFor('Claude Code')
+  await tui.send('read hello.txt')
+  await tui.waitFor('the file says hi')
+}, 25_000)
