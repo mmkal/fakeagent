@@ -1,6 +1,6 @@
 import {test, expect} from 'vitest'
 import {spawn} from 'node:child_process'
-import {createFakeAgent, responses} from '../src/index.ts'
+import {createFakeAgent, parseRequest, responses} from '../src/index.ts'
 import {waitForExit} from './helpers/spawn.ts'
 
 const catchAll = () => responses.openai.text('three')
@@ -20,12 +20,13 @@ test('opencode run hits fakeagent server and gets registered response', async ()
 
 test('opencode TUI receives fakeagent response', async () => {
   await using api = await createFakeAgent({port: 0, fetch: catchAll})
-  const {env} = api.getSpawnArgs('opencode')
+  const {command, args: agentArgs, env} = api.getSpawnArgs('opencode')
 
   const child = spawn('bun', ['test/helpers/tui-test-runner.ts'], {
     env: {
       ...process.env, ...env,
-      PTY_COMMAND: 'opencode',
+      PTY_COMMAND: command,
+      PTY_ARGS: JSON.stringify(agentArgs),
       PTY_SUBMIT: 'lf-cr',
       PTY_WAIT_FOR: 'three',
     },

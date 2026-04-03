@@ -48,12 +48,12 @@ export const agents = {
   },
   claude: {
     command: 'claude',
+    // --bare: skip OAuth/keychain, use only ANTHROPIC_API_KEY. Also skips hooks, LSP, etc.
+    args: ['--bare'],
     getEnv(port) {
       return {
         ANTHROPIC_BASE_URL: `http://localhost:${port}`,
         ANTHROPIC_API_KEY: 'fake-key',
-        // Disable workspace trust dialog, MCP, hooks, etc. for fast isolated startup
-        CLAUDE_CODE_DISABLE_NONESSENTIAL: '1',
       }
     },
   },

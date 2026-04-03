@@ -1,3 +1,3 @@
-export {createFakeAgent, responses, matchers} from './api.ts'
-export type {FakeAgent, ChatCompletionRequest, CreateFakeAgentOptions} from './api.ts'
+export {createFakeAgent, responses, parseRequest} from './api.ts'
+export type {FakeAgent, ParsedRequest, CreateFakeAgentOptions} from './api.ts'
 export type {AgentName, AgentConfig} from './agents.ts'

@@ -2,13 +2,6 @@ import * as http from 'node:http'
 import {spawn as nodeSpawn, type ChildProcess, type SpawnOptions} from 'node:child_process'
 import {agents, type AgentName, type AgentConfig} from './agents.ts'
 
-export interface ChatCompletionRequest {
-  model: string
-  messages: Array<{role: string; content: string}>
-  stream?: boolean
-  [key: string]: unknown
-}
-
 export interface FakeAgent extends AsyncDisposable {
   port: number
   spawn(agent: AgentName, args?: string[], options?: SpawnOptions): ChildProcess
@@ -47,17 +40,44 @@ export const responses = {
   },
 }
 
-export const matchers = {
-  /** Parse the request body as a chat completion request */
-  async chatCompletionRequest(request: Request): Promise<ChatCompletionRequest> {
-    return request.json() as Promise<ChatCompletionRequest>
-  },
+interface Matchable {
+  matches(pattern: RegExp): boolean
+}
 
-  /** Test a regex against concatenated "role: content" message lines */
-  promptMatches(body: ChatCompletionRequest, pattern: RegExp): boolean {
-    const concatenated = body.messages.map((m) => `${m.role}: ${m.content}`).join('\n')
-    return pattern.test(concatenated)
-  },
+export interface ParsedRequest {
+  /** Non-null if this is an OpenAI chat completion request (/v1/chat/completions) */
+  openaiChat: Matchable | null
+  /** Non-null if this is an Anthropic messages request (/v1/messages) */
+  anthropicMessages: Matchable | null
+  /** The raw parsed body */
+  body: any
+}
+
+function extractText(content: any): string {
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) return content.filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n')
+  return ''
+}
+
+export async function parseRequest(request: Request): Promise<ParsedRequest> {
+  const text = await request.text()
+  const body: any = text ? JSON.parse(text) : {}
+  const messages: Array<{role: string; content: any}> = body.messages ?? []
+
+  const concatenated = messages.map((m) => `${m.role}: ${extractText(m.content)}`).join('\n')
+
+  // Detect protocol from URL path
+  const path = new URL(request.url).pathname
+  const isAnthropic = path.includes('/v1/messages')
+  const isOpenAI = path.includes('/v1/chat/completions')
+
+  const systemPrefix = body.system ? `system: ${extractText(body.system)}\n` : ''
+
+  return {
+    openaiChat: isOpenAI ? {matches: (pattern) => pattern.test(concatenated)} : null,
+    anthropicMessages: isAnthropic ? {matches: (pattern) => pattern.test(systemPrefix + concatenated)} : null,
+    body,
+  }
 }
 
 export interface CreateFakeAgentOptions {
@@ -86,7 +106,7 @@ function jsonToSSE(json: any): Response {
   if (json.type === 'message') {
     const content = json.content?.[0]?.text ?? ''
     return sseResponse([
-      {event: 'message_start', data: JSON.stringify({type: 'message_start', message: {...json, content: [], usage: {input_tokens: json.usage?.input_tokens ?? 0, output_tokens: 1}}})},
+      {event: 'message_start', data: JSON.stringify({type: 'message_start', message: {...json, stop_reason: null, content: [], usage: {input_tokens: json.usage?.input_tokens ?? 0, output_tokens: 1}}})},
       {event: 'content_block_start', data: JSON.stringify({type: 'content_block_start', index: 0, content_block: {type: 'text', text: ''}})},
       {event: 'ping', data: JSON.stringify({type: 'ping'})},
       {event: 'content_block_delta', data: JSON.stringify({type: 'content_block_delta', index: 0, delta: {type: 'text_delta', text: content}})},
@@ -106,14 +126,30 @@ function jsonToSSE(json: any): Response {
 }
 
 export async function createFakeAgent(options: CreateFakeAgentOptions): Promise<FakeAgent> {
+  const fs = await import('node:fs')
+  fs.writeFileSync('/tmp/fakeagent-debug.log', `[fakeagent] server starting\n`)
+  const debugLog = (msg: string) => fs.appendFileSync('/tmp/fakeagent-debug.log', msg + '\n')
+
   const server = http.createServer(async (req, res) => {
     try {
+      debugLog(`\n--- ${req.method} ${req.url} ---`)
+
+      // Health check — claude sends HEAD / on startup
+      if (req.method === 'HEAD') {
+        debugLog('-> 200 (health check)')
+        res.writeHead(200)
+        res.end()
+        return
+      }
+
       // Convert node IncomingMessage to a standard Request
       const body = await new Promise<string>((resolve) => {
         let data = ''
         req.on('data', (chunk: string) => (data += chunk))
         req.on('end', () => resolve(data))
       })
+      debugLog(`body (first 200): ${body.slice(0, 200)}`)
+
       const url = `http://localhost${req.url}`
       const request = new Request(url, {
         method: req.method,
@@ -122,6 +158,7 @@ export async function createFakeAgent(options: CreateFakeAgentOptions): Promise<
       })
 
       let response = await options.fetch(request)
+      debugLog(`fetch returned: status=${response.status} ct=${response.headers.get('content-type')}`)
 
       // Auto-convert JSON responses to SSE when the client requested streaming.
       // This lets fetch handlers return plain responses.openai.text() or responses.anthropic.text()
@@ -130,21 +167,29 @@ export async function createFakeAgent(options: CreateFakeAgentOptions): Promise<
       const isJsonResponse = response.headers.get('content-type')?.includes('application/json')
       if (isStreamRequest && isJsonResponse && response.ok) {
         const json = await response.json() as any
+        debugLog(`converting to SSE: type=${json.type ?? 'openai'}`)
         response = jsonToSSE(json)
       }
 
       // Convert standard Response back to node response
-      res.writeHead(response.status, Object.fromEntries(response.headers.entries()))
+      const headers = Object.fromEntries(response.headers.entries())
+      debugLog(`-> ${response.status} ${JSON.stringify(headers)}`)
+      res.writeHead(response.status, headers)
       if (response.body) {
         const reader = response.body.getReader()
+        let totalBytes = 0
         while (true) {
           const {done, value} = await reader.read()
           if (done) break
+          totalBytes += value?.length ?? 0
           res.write(value)
         }
+        debugLog(`streamed ${totalBytes} bytes`)
       }
       res.end()
+      debugLog('response complete')
     } catch (err) {
+      debugLog(`ERROR: ${err}`)
       res.writeHead(500, {'Content-Type': 'application/json'})
       res.end(JSON.stringify({error: {message: String(err)}}))
     }

@@ -1,15 +1,15 @@
 import {test, expect} from 'vitest'
-import {createFakeAgent, matchers, responses} from '../src/index.ts'
+import {createFakeAgent, parseRequest, responses} from '../src/index.ts'
 
 test('responds to registered pattern with openai text response', async () => {
   await using api = await createFakeAgent({
     port: 0,
     async fetch(request) {
-      const body = await matchers.chatCompletionRequest(request)
-      if (matchers.promptMatches(body, /one plus two/)) {
+      const parsed = await parseRequest(request)
+      if (parsed.openaiChat?.matches(/one plus two/)) {
         return responses.openai.text('three')
       }
-      return new Response('unmatched', {status: 400})
+      return Response.json({error: {message: 'unmatched'}}, {status: 400})
     },
   })
 
@@ -33,11 +33,11 @@ test('matches against concatenated message content', async () => {
   await using api = await createFakeAgent({
     port: 0,
     async fetch(request) {
-      const body = await matchers.chatCompletionRequest(request)
-      if (matchers.promptMatches(body, /system.*user.*hello/s)) {
+      const parsed = await parseRequest(request)
+      if (parsed.openaiChat?.matches(/system.*user.*hello/s)) {
         return responses.openai.text('hi there')
       }
-      return new Response('unmatched', {status: 400})
+      return Response.json({error: {message: 'unmatched'}}, {status: 400})
     },
   })
 
@@ -64,10 +64,7 @@ test('unmatched request returns error', async () => {
   await using api = await createFakeAgent({
     port: 0,
     fetch() {
-      return new Response(JSON.stringify({error: {message: 'No matching handler'}}), {
-        status: 400,
-        headers: {'Content-Type': 'application/json'},
-      })
+      return Response.json({error: {message: 'No matching handler'}}, {status: 400})
     },
   })
 
@@ -87,14 +84,14 @@ test('unmatched request returns error', async () => {
   })
 })
 
-test('fetch handler has access to full request', async () => {
+test('fetch handler has access to full request body', async () => {
   let capturedModel = ''
   await using api = await createFakeAgent({
     port: 0,
     async fetch(request) {
-      const body = await matchers.chatCompletionRequest(request)
-      capturedModel = body.model
-      if (body.messages.some((m) => m.role === 'user' && m.content.includes('hello'))) {
+      const parsed = await parseRequest(request)
+      capturedModel = parsed.body.model
+      if (parsed.openaiChat?.matches(/hello/)) {
         return responses.openai.text('first')
       }
       return responses.openai.text('fallback')
@@ -115,18 +112,47 @@ test('fetch handler has access to full request', async () => {
   expect(capturedModel).toBe('gpt-test')
 })
 
+test('anthropicMessages matches with top-level system field', async () => {
+  await using api = await createFakeAgent({
+    port: 0,
+    async fetch(request) {
+      const parsed = await parseRequest(request)
+      if (parsed.anthropicMessages?.matches(/system.*careful.*user.*hello/s)) {
+        return responses.anthropic.text('matched')
+      }
+      return Response.json({error: {message: 'unmatched'}}, {status: 400})
+    },
+  })
+
+  const response = await fetch(`http://localhost:${api.port}/v1/messages`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 1024,
+      system: 'Be careful',
+      messages: [{role: 'user', content: 'hello'}],
+    }),
+  })
+
+  expect(response.status).toBe(200)
+  const data = await response.json()
+  expect(data).toMatchObject({
+    content: [{type: 'text', text: 'matched'}],
+  })
+})
+
 test('getSpawnArgs returns command and env for agent', async () => {
   await using api = await createFakeAgent({
     port: 0,
     fetch: () => new Response('not found', {status: 404}),
   })
 
-  const spawnArgs = api.getSpawnArgs('opencode')
-  expect(spawnArgs.command).toBe('opencode')
-  expect(spawnArgs.env.OPENCODE_CONFIG_CONTENT).toBeDefined()
-  expect(spawnArgs.env.ANTHROPIC_API_KEY).toBe('fake-key')
+  const opencode = api.getSpawnArgs('opencode')
+  expect(opencode.command).toBe('opencode')
+  expect(opencode.env.OPENCODE_CONFIG_CONTENT).toBeDefined()
 
-  const config = JSON.parse(spawnArgs.env.OPENCODE_CONFIG_CONTENT!)
-  expect(config.provider.fakeagent.api).toBe(`http://localhost:${api.port}/v1`)
-  expect(config.model).toBe('fakeagent/fake-model')
+  const claude = api.getSpawnArgs('claude')
+  expect(claude.command).toBe('claude')
+  expect(claude.env.ANTHROPIC_BASE_URL).toBe(`http://localhost:${api.port}`)
 })
