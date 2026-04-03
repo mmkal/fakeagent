@@ -12,5 +12,5 @@
     "skipLibCheck": true
   },
   "include": ["src", "test"],
-  "exclude": ["test/helpers"]
+  "exclude": ["test/helpers", "**/*ignoreme*"]
 }

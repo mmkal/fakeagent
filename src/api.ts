@@ -2,10 +2,15 @@ import * as http from 'node:http'
 import {spawn as nodeSpawn, type ChildProcess, type SpawnOptions} from 'node:child_process'
 import {agents, type AgentName, type AgentConfig} from './agents.ts'
 
-export interface FakeAgentApi extends AsyncDisposable {
+export interface ChatCompletionRequest {
+  model: string
+  messages: Array<{role: string; content: string}>
+  stream?: boolean
+  [key: string]: unknown
+}
+
+export interface FakeAgent extends AsyncDisposable {
   port: number
-  register(pattern: RegExp, handler: () => OpenAIResponse): void
-  responses: typeof responses
   spawn(agent: AgentName, args?: string[], options?: SpawnOptions): ChildProcess
   getSpawnArgs(agent: AgentName): {command: string; args: string[]; env: Record<string, string>; spawnOptions: SpawnOptions}
   createCli(): {run(argv?: string[]): ChildProcess}
@@ -26,96 +31,101 @@ export interface OpenAIResponse {
 
 export const responses = {
   openai: {
-    text(content: string): OpenAIResponse {
-      return {
+    /** Return a chat completion response. The server auto-converts to SSE when the client requests streaming. */
+    text(content: string): Response {
+      const body: OpenAIResponse = {
         id: `chatcmpl-fake-${Date.now()}`,
         object: 'chat.completion',
         created: Math.floor(Date.now() / 1000),
         model: 'fake-model',
-        choices: [
-          {
-            index: 0,
-            message: {role: 'assistant', content},
-            finish_reason: 'stop',
-          },
-        ],
+        choices: [{index: 0, message: {role: 'assistant', content}, finish_reason: 'stop'}],
         usage: {prompt_tokens: 0, completion_tokens: 0, total_tokens: 0},
       }
+      return Response.json(body)
     },
   },
 }
 
-type Handler = {pattern: RegExp; handler: () => OpenAIResponse}
+export const matchers = {
+  /** Parse the request body as a chat completion request */
+  async chatCompletionRequest(request: Request): Promise<ChatCompletionRequest> {
+    return request.json() as Promise<ChatCompletionRequest>
+  },
 
-export async function getFakeAgentApi(options: {port?: number} = {}): Promise<FakeAgentApi> {
-  const handlers: Handler[] = []
+  /** Test a regex against concatenated "role: content" message lines */
+  promptMatches(body: ChatCompletionRequest, pattern: RegExp): boolean {
+    const concatenated = body.messages.map((m) => `${m.role}: ${m.content}`).join('\n')
+    return pattern.test(concatenated)
+  },
+}
 
-  const server = http.createServer((req, res) => {
-    if (req.method === 'POST' && req.url?.startsWith('/v1/chat/completions')) {
-      let body = ''
-      req.on('data', (chunk) => (body += chunk))
-      req.on('end', () => {
-        try {
-          const parsed = JSON.parse(body)
-          const messages: Array<{role: string; content: string}> = parsed.messages ?? []
-          const concatenated = messages.map((m) => `${m.role}: ${m.content}`).join('\n')
+export interface CreateFakeAgentOptions {
+  port?: number
+  fetch(request: Request): Response | Promise<Response>
+}
 
-          const match = handlers.find((h) => h.pattern.test(concatenated))
-          if (!match) {
-            res.writeHead(400, {'Content-Type': 'application/json'})
-            res.end(
-              JSON.stringify({
-                error: {
-                  message: `No matching handler for prompt:\n${concatenated}`,
-                  type: 'invalid_request_error',
-                },
-              }),
-            )
-            return
-          }
-
-          const response = match.handler()
-          const content = response.choices[0]?.message.content ?? ''
-
-          if (parsed.stream) {
-            res.writeHead(200, {
-              'Content-Type': 'text/event-stream',
-              'Cache-Control': 'no-cache',
-              Connection: 'keep-alive',
-            })
-            const chunk = {
-              id: response.id,
-              object: 'chat.completion.chunk',
-              created: response.created,
-              model: response.model,
-              choices: [{index: 0, delta: {role: 'assistant', content}, finish_reason: null}],
-            }
-            res.write(`data: ${JSON.stringify(chunk)}\n\n`)
-            const done = {
-              id: response.id,
-              object: 'chat.completion.chunk',
-              created: response.created,
-              model: response.model,
-              choices: [{index: 0, delta: {}, finish_reason: 'stop'}],
-              usage: response.usage,
-            }
-            res.write(`data: ${JSON.stringify(done)}\n\n`)
-            res.write('data: [DONE]\n\n')
-            res.end()
-          } else {
-            res.writeHead(200, {'Content-Type': 'application/json'})
-            res.end(JSON.stringify(response))
-          }
-        } catch (err) {
-          res.writeHead(500, {'Content-Type': 'application/json'})
-          res.end(JSON.stringify({error: {message: String(err)}}))
-        }
+export async function createFakeAgent(options: CreateFakeAgentOptions): Promise<FakeAgent> {
+  const server = http.createServer(async (req, res) => {
+    try {
+      // Convert node IncomingMessage to a standard Request
+      const body = await new Promise<string>((resolve) => {
+        let data = ''
+        req.on('data', (chunk: string) => (data += chunk))
+        req.on('end', () => resolve(data))
       })
-      return
-    }
+      const url = `http://localhost${req.url}`
+      const request = new Request(url, {
+        method: req.method,
+        headers: req.headers as Record<string, string>,
+        body: req.method !== 'GET' && req.method !== 'HEAD' ? body : undefined,
+      })
 
-    res.writeHead(404, {'Content-Type': 'application/json'})
-    res.end(JSON.stringify({error: {message: 'Not found'}}))
+      let response = await options.fetch(request)
+
+      // Auto-convert JSON chat completion responses to SSE when the client requested streaming.
+      // This lets fetch handlers return plain responses.openai.text() without worrying about streaming.
+      const isStreamRequest = body.includes('"stream":true') || body.includes('"stream": true')
+      const isJsonResponse = response.headers.get('content-type')?.includes('application/json')
+      if (isStreamRequest && isJsonResponse && response.ok) {
+        const json = await response.json() as OpenAIResponse
+        const content = json.choices?.[0]?.message?.content ?? ''
+        const encoder = new TextEncoder()
+        const chunk = JSON.stringify({
+          id: json.id, object: 'chat.completion.chunk', created: json.created, model: json.model,
+          choices: [{index: 0, delta: {role: 'assistant', content}, finish_reason: null}],
+        })
+        const done = JSON.stringify({
+          id: json.id, object: 'chat.completion.chunk', created: json.created, model: json.model,
+          choices: [{index: 0, delta: {}, finish_reason: 'stop'}], usage: json.usage,
+        })
+        const stream = new ReadableStream({
+          start(controller) {
+            controller.enqueue(encoder.encode(`data: ${chunk}\n\n`))
+            controller.enqueue(encoder.encode(`data: ${done}\n\n`))
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'))
+            controller.close()
+          },
+        })
+        response = new Response(stream, {
+          headers: {'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive'},
+        })
+      }
+
+      // Convert standard Response back to node response
+      res.writeHead(response.status, Object.fromEntries(response.headers.entries()))
+      if (response.body) {
+        const reader = response.body.getReader()
+        while (true) {
+          const {done, value} = await reader.read()
+          if (done) break
+          res.write(value)
+        }
+      }
+      res.end()
+    } catch (err) {
+      res.writeHead(500, {'Content-Type': 'application/json'})
+      res.end(JSON.stringify({error: {message: String(err)}}))
+    }
   })
 
   const port = await new Promise<number>((resolve) => {
@@ -146,10 +156,6 @@ export async function getFakeAgentApi(options: {port?: number} = {}): Promise<Fa
 
   return {
     port,
-    responses,
-    register(pattern, handler) {
-      handlers.push({pattern, handler})
-    },
     spawn: spawnAgent,
     getSpawnArgs,
     createCli() {
@@ -164,7 +170,6 @@ export async function getFakeAgentApi(options: {port?: number} = {}): Promise<Fa
           }
           const child = spawnAgent(agentName, args.slice(1), {stdio: 'inherit'})
 
-          // Forward signals and clean up on exit
           const onSignal = (sig: NodeJS.Signals) => {
             child.kill(sig)
           }

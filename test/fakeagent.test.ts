@@ -1,10 +1,17 @@
 import {test, expect} from 'vitest'
-import {getFakeAgentApi} from '../src/api.ts'
+import {createFakeAgent, matchers, responses} from '../src/index.ts'
 
 test('responds to registered pattern with openai text response', async () => {
-  await using api = await getFakeAgentApi({port: 0})
-
-  api.register(/one plus two/, () => api.responses.openai.text('three'))
+  await using api = await createFakeAgent({
+    port: 0,
+    async fetch(request) {
+      const body = await matchers.chatCompletionRequest(request)
+      if (matchers.promptMatches(body, /one plus two/)) {
+        return responses.openai.text('three')
+      }
+      return new Response('unmatched', {status: 400})
+    },
+  })
 
   const response = await fetch(`http://localhost:${api.port}/v1/chat/completions`, {
     method: 'POST',
@@ -23,9 +30,16 @@ test('responds to registered pattern with openai text response', async () => {
 })
 
 test('matches against concatenated message content', async () => {
-  await using api = await getFakeAgentApi({port: 0})
-
-  api.register(/system.*user.*hello/s, () => api.responses.openai.text('hi there'))
+  await using api = await createFakeAgent({
+    port: 0,
+    async fetch(request) {
+      const body = await matchers.chatCompletionRequest(request)
+      if (matchers.promptMatches(body, /system.*user.*hello/s)) {
+        return responses.openai.text('hi there')
+      }
+      return new Response('unmatched', {status: 400})
+    },
+  })
 
   const response = await fetch(`http://localhost:${api.port}/v1/chat/completions`, {
     method: 'POST',
@@ -47,7 +61,15 @@ test('matches against concatenated message content', async () => {
 })
 
 test('unmatched request returns error', async () => {
-  await using api = await getFakeAgentApi({port: 0})
+  await using api = await createFakeAgent({
+    port: 0,
+    fetch() {
+      return new Response(JSON.stringify({error: {message: 'No matching handler'}}), {
+        status: 400,
+        headers: {'Content-Type': 'application/json'},
+      })
+    },
+  })
 
   const response = await fetch(`http://localhost:${api.port}/v1/chat/completions`, {
     method: 'POST',
@@ -65,29 +87,39 @@ test('unmatched request returns error', async () => {
   })
 })
 
-test('first matching handler wins', async () => {
-  await using api = await getFakeAgentApi({port: 0})
-
-  api.register(/hello/, () => api.responses.openai.text('first'))
-  api.register(/hello/, () => api.responses.openai.text('second'))
+test('fetch handler has access to full request', async () => {
+  let capturedModel = ''
+  await using api = await createFakeAgent({
+    port: 0,
+    async fetch(request) {
+      const body = await matchers.chatCompletionRequest(request)
+      capturedModel = body.model
+      if (body.messages.some((m) => m.role === 'user' && m.content.includes('hello'))) {
+        return responses.openai.text('first')
+      }
+      return responses.openai.text('fallback')
+    },
+  })
 
   const response = await fetch(`http://localhost:${api.port}/v1/chat/completions`, {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({
-      model: 'fake-model',
+      model: 'gpt-test',
       messages: [{role: 'user', content: 'hello'}],
     }),
   })
 
   const data = await response.json()
-  expect(data).toMatchObject({
-    choices: [{message: {content: 'first'}}],
-  })
+  expect(data).toMatchObject({choices: [{message: {content: 'first'}}]})
+  expect(capturedModel).toBe('gpt-test')
 })
 
 test('getSpawnArgs returns command and env for agent', async () => {
-  await using api = await getFakeAgentApi({port: 0})
+  await using api = await createFakeAgent({
+    port: 0,
+    fetch: () => new Response('not found', {status: 404}),
+  })
 
   const spawnArgs = api.getSpawnArgs('opencode')
   expect(spawnArgs.command).toBe('opencode')

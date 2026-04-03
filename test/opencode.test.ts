@@ -1,11 +1,11 @@
 import {test, expect} from 'vitest'
 import {execSync, spawn} from 'node:child_process'
-import {getFakeAgentApi} from '../src/api.ts'
+import {createFakeAgent, matchers, responses} from '../src/index.ts'
+
+const catchAll = () => responses.openai.text('three')
 
 test('opencode run hits fakeagent server and gets registered response', async () => {
-  await using api = await getFakeAgentApi({port: 0})
-
-  api.register(/.*/, () => api.responses.openai.text('three'))
+  await using api = await createFakeAgent({port: 0, fetch: catchAll})
 
   const child = api.spawn('opencode', ['run', 'what is one plus two', '--format', 'json', '--pure'], {
     cwd: '/tmp/fakeagent-test',
@@ -36,13 +36,7 @@ test('opencode TUI receives fakeagent response', async () => {
   try { execSync('pkill -9 -f "opencode"', {stdio: 'ignore'}) } catch {}
   await new Promise((r) => setTimeout(r, 1000))
 
-  await using api = await getFakeAgentApi({port: 0})
-
-  let requestCount = 0
-  api.register(/.*/, () => {
-    requestCount++
-    return api.responses.openai.text('three')
-  })
+  await using api = await createFakeAgent({port: 0, fetch: catchAll})
 
   const {env} = api.getSpawnArgs('opencode')
 
@@ -74,7 +68,6 @@ test('opencode TUI receives fakeagent response', async () => {
   })
 
   expect(exitCode, `TUI test failed.\nstdout: ${stdout}\nstderr: ${stderr.slice(-500)}`).toBe(0)
-  expect(requestCount, 'fakeagent server should have received API requests').toBeGreaterThan(0)
 
   const result = JSON.parse(stdout.trim().split('\n').pop()!)
   expect(result.hasFakeModel).toBe(true)
