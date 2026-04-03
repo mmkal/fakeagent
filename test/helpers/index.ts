@@ -60,9 +60,6 @@ export async function spawnTui(
 
   const base = `http://localhost:${controlPort}`
 
-  // Wait for the TUI to render before returning
-  await new Promise((r) => setTimeout(r, 3000))
-
   return {
     async send(text) {
       await fetch(`${base}/send`, {

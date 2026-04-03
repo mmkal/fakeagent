@@ -31,6 +31,7 @@ test('claude TUI receives fakeagent response', async () => {
   })
 
   await using tui = await spawnTui(api, 'claude')
+  await tui.waitFor('Claude Code')
   await tui.send('what is one plus two')
   await tui.waitFor('three')
 }, 20_000)
