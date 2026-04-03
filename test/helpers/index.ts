@@ -10,7 +10,7 @@ export interface TuiHandle extends AsyncDisposable {
   /** Press Enter (to dismiss a startup prompt) */
   dismiss(): Promise<void>
   /** Wait for a string to appear in the TUI output */
-  waitFor(pattern: string, timeout?: number): Promise<void>
+  waitFor(pattern: string, options?: {timeout?: number}): Promise<void>
   /** Get the current TUI output (cleaned of ANSI escapes) */
   output(): Promise<string>
 }
@@ -71,7 +71,7 @@ export async function spawnTui(
     async dismiss() {
       await fetch(`${base}/dismiss`, {method: 'POST'})
     },
-    async waitFor(pattern, timeout = 10_000) {
+    async waitFor(pattern, {timeout = 10_000} = {}) {
       const res = await fetch(`${base}/wait`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
