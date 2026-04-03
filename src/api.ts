@@ -123,6 +123,8 @@ export interface ParsedRequest {
   codex: ParsedProtocol | null
   /** Last user message from whichever protocol was detected */
   lastMessage: string
+  /** Whether this request includes tool definitions (false for title generation, summaries, etc.) */
+  hasTools: boolean
   /** Return a response in the correct format for the detected protocol */
   respond: {
     text(content: string): Response
@@ -171,11 +173,14 @@ export async function parseRequest(request: Request): Promise<ParsedRequest> {
         : responses.openai.toolCall(name, args),
   }
 
+  const hasTools = (body.tools?.length ?? 0) > 0
+
   return {
     openai: isOpenAI ? protocol : null,
     anthropic: isAnthropic ? protocol : null,
     codex: isCodex ? protocol : null,
     lastMessage,
+    hasTools,
     respond,
     body,
   }

@@ -16,6 +16,28 @@ const submitMode = process.env.PTY_SUBMIT ?? 'cr'
 let output = ''
 const waiters: Array<{pattern: string; resolve: () => void}> = []
 
+function cleanOutput(raw: string): string {
+  return raw
+    // Replace cursor-right movement (ESC[nC) with spaces
+    .replace(/\x1b\[(\d+)C/g, (_m, n) => ' '.repeat(parseInt(n)))
+    // CSI sequences: ESC [ (params) letter
+    .replace(/\x1b\[[\x20-\x3f]*[\x40-\x7e]/g, '')
+    // OSC sequences: ESC ] ... BEL/ST
+    .replace(/\x1b\].*?(?:\x07|\x1b\\)/g, '')
+    // Other 2-byte ESC sequences: ESC + single char
+    .replace(/\x1b[^[\]]/g, '')
+}
+
+function checkWaiters() {
+  const clean = cleanOutput(output)
+  for (let i = waiters.length - 1; i >= 0; i--) {
+    if (clean.includes(waiters[i].pattern)) {
+      waiters[i].resolve()
+      waiters.splice(i, 1)
+    }
+  }
+}
+
 const proc = Bun.spawn([command, ...args], {
   terminal: {
     cols: 120,
@@ -23,12 +45,7 @@ const proc = Bun.spawn([command, ...args], {
     data(_term: any, data: any) {
       const text = typeof data === 'string' ? data : new TextDecoder().decode(data)
       output += text
-      for (let i = waiters.length - 1; i >= 0; i--) {
-        if (output.includes(waiters[i].pattern)) {
-          waiters[i].resolve()
-          waiters.splice(i, 1)
-        }
-      }
+      checkWaiters()
     },
   },
   cwd: process.env.PTY_CWD || '/tmp/fakeagent-test',
@@ -63,7 +80,8 @@ const server = Bun.serve({
 
     if (url.pathname === '/wait') {
       const {pattern, timeout = 10000} = await request.json() as {pattern: string; timeout?: number}
-      if (output.includes(pattern)) {
+      const clean = cleanOutput(output)
+      if (clean.includes(pattern)) {
         return Response.json({found: true})
       }
       const found = await Promise.race([
@@ -81,8 +99,7 @@ const server = Bun.serve({
     }
 
     if (url.pathname === '/output') {
-      const clean = output.replace(/\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b\[\?[0-9;]*[a-zA-Z]/g, '')
-      return Response.json({raw: output.slice(-2000), clean: clean.slice(-2000)})
+      return Response.json({raw: output.slice(-2000), clean: cleanOutput(output).slice(-2000)})
     }
 
     return new Response('not found', {status: 404})

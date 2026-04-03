@@ -81,7 +81,7 @@ export async function spawnTui(
       if (!found) {
         const outRes = await fetch(`${base}/output`)
         const {clean} = await outRes.json() as {clean: string}
-        throw new Error(`Timed out waiting for "${pattern}".\nOutput: ${clean.slice(-500)}`)
+        throw new Error(`Timed out waiting for "${pattern}". Output: ${JSON.stringify(clean.slice(-500))}`)
       }
     },
     async output() {

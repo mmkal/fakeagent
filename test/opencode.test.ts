@@ -41,7 +41,7 @@ test('opencode TUI tool use', async () => {
       if (hasToolResult) {
         return parsed.respond.text('the file says hi')
       }
-      if (parsed.lastMessage.match(/read hello/)) {
+      if (parsed.lastMessage.match(/read hello/) && parsed.hasTools) {
         return parsed.respond.toolCall('read', {filePath: '/tmp/fakeagent-test/hello.txt'})
       }
       return parsed.respond.text('')
