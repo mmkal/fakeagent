@@ -52,7 +52,7 @@ export const agents = {
   claude: {
     command: 'claude',
     // --bare: skip OAuth/keychain, use only ANTHROPIC_API_KEY. Also skips hooks, LSP, etc.
-    args: ['--bare', '--allow-dangerously-skip-permissions', '--dangerously-skip-permissions'],
+    args: ['--bare', '--allow-dangerously-skip-permissions', '--dangerously-skip-permissions', "--model", "haiku"],
     getEnv(port) {
       return {
         ANTHROPIC_BASE_URL: `http://localhost:${port}`,

@@ -37,11 +37,12 @@ test('opencode TUI tool use', async () => {
   await using api = await createFakeAgent({
     async fetch(request) {
       const parsed = await parseRequest(request)
+      if (!parsed.hasTools) return parsed.respond.text('title')
       const hasToolResult = parsed.body.messages?.some((m: any) => m.role === 'tool')
       if (hasToolResult) {
         return parsed.respond.text('the file says hi')
       }
-      if (parsed.lastMessage.match(/read hello/) && parsed.hasTools) {
+      if (parsed.lastMessage.match(/read hello/)) {
         return parsed.respond.toolCall('read', {filePath: '/tmp/fakeagent-test/hello.txt'})
       }
       return parsed.respond.text('')
