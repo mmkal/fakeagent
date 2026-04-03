@@ -142,6 +142,62 @@ test('anthropicMessages matches with top-level system field', async () => {
   })
 })
 
+test('parseRequest detects protocol from URL path', async () => {
+  await using api = await createFakeAgent({
+    port: 0,
+    async fetch(request) {
+      const parsed = await parseRequest(request)
+      // Return which protocol was detected so we can assert from outside
+      return Response.json({
+        openaiChat: parsed.openaiChat !== null,
+        anthropicMessages: parsed.anthropicMessages !== null,
+      })
+    },
+  })
+
+  const anthropicRes = await fetch(`http://localhost:${api.port}/v1/messages`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({model: 'claude', messages: [{role: 'user', content: 'hi'}]}),
+  })
+  expect(await anthropicRes.json()).toMatchObject({openaiChat: false, anthropicMessages: true})
+
+  const openaiRes = await fetch(`http://localhost:${api.port}/v1/chat/completions`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({model: 'gpt', messages: [{role: 'user', content: 'hi'}]}),
+  })
+  expect(await openaiRes.json()).toMatchObject({openaiChat: true, anthropicMessages: false})
+})
+
+test('dual-protocol handler returns correct format per protocol', async () => {
+  await using api = await createFakeAgent({
+    port: 0,
+    async fetch(request) {
+      const parsed = await parseRequest(request)
+      if (parsed.openaiChat?.matches(/hi/)) return responses.openai.text('openai-response')
+      if (parsed.anthropicMessages?.matches(/hi/)) return responses.anthropic.text('anthropic-response')
+      return Response.json({error: 'no match'}, {status: 400})
+    },
+  })
+
+  const anthropicRes = await fetch(`http://localhost:${api.port}/v1/messages`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({model: 'claude', messages: [{role: 'user', content: 'hi'}]}),
+  })
+  const anthropicData = await anthropicRes.json()
+  expect(anthropicData).toMatchObject({type: 'message', content: [{text: 'anthropic-response'}]})
+
+  const openaiRes = await fetch(`http://localhost:${api.port}/v1/chat/completions`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({model: 'gpt', messages: [{role: 'user', content: 'hi'}]}),
+  })
+  const openaiData = await openaiRes.json()
+  expect(openaiData).toMatchObject({choices: [{message: {content: 'openai-response'}}]})
+})
+
 test('getSpawnArgs returns command and env for agent', async () => {
   await using api = await createFakeAgent({
     port: 0,
