@@ -33,18 +33,18 @@ test('codex TUI text response', async () => {
   await tui.waitFor('three')
 }, 25_000)
 
-test.skip('codex TUI tool use', async () => {
+test('codex TUI tool use', async () => {
   await using api = await createFakeAgent({
     async fetch(request) {
       const parsed = await parseRequest(request)
-      if (parsed.lastMessage.match(/read hello/)) {
-        return parsed.respond.toolCall('shell', {command: ['cat', '/tmp/fakeagent-test/hello.txt']})
-      }
       const hasToolResult = parsed.body.input?.some?.((i: any) => i.type === 'function_call_output')
       if (hasToolResult) {
         return parsed.respond.text('the file says hi')
       }
-      return Response.json({error: 'no match'}, {status: 400})
+      if (parsed.lastMessage.match(/read hello/)) {
+        return parsed.respond.toolCall('shell', {command: ['cat', '/tmp/fakeagent-test/hello.txt']})
+      }
+      return parsed.respond.text('')
     },
   })
 

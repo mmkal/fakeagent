@@ -267,11 +267,20 @@ function jsonToSSE(json: any): Response {
   const message = json.choices?.[0]?.message ?? {}
   const finishReason = json.choices?.[0]?.finish_reason ?? 'stop'
   if (message.tool_calls) {
-    return sseResponse([
-      {data: JSON.stringify({id: json.id, object: 'chat.completion.chunk', created: json.created, model: json.model, choices: [{index: 0, delta: {role: 'assistant', tool_calls: message.tool_calls}, finish_reason: null}]})},
-      {data: JSON.stringify({id: json.id, object: 'chat.completion.chunk', created: json.created, model: json.model, choices: [{index: 0, delta: {}, finish_reason: finishReason}], usage: json.usage})},
-      {data: '[DONE]'},
-    ])
+    const events: Array<{data: string}> = []
+    // First chunk: role + tool call header (id, type, name, empty arguments)
+    const toolCallHeaders = message.tool_calls.map((tc: any, i: number) => ({
+      index: i, id: tc.id, type: 'function', function: {name: tc.function.name, arguments: ''},
+    }))
+    events.push({data: JSON.stringify({id: json.id, object: 'chat.completion.chunk', created: json.created, model: json.model, choices: [{index: 0, delta: {role: 'assistant', tool_calls: toolCallHeaders}, finish_reason: null}]})})
+    // Second chunk: arguments for each tool call
+    for (let i = 0; i < message.tool_calls.length; i++) {
+      events.push({data: JSON.stringify({id: json.id, object: 'chat.completion.chunk', created: json.created, model: json.model, choices: [{index: 0, delta: {tool_calls: [{index: i, function: {arguments: message.tool_calls[i].function.arguments}}]}, finish_reason: null}]})})
+    }
+    // Final chunk: finish_reason
+    events.push({data: JSON.stringify({id: json.id, object: 'chat.completion.chunk', created: json.created, model: json.model, choices: [{index: 0, delta: {}, finish_reason: finishReason}], usage: json.usage})})
+    events.push({data: '[DONE]'})
+    return sseResponse(events)
   }
   return sseResponse([
     {data: JSON.stringify({id: json.id, object: 'chat.completion.chunk', created: json.created, model: json.model, choices: [{index: 0, delta: {role: 'assistant', content: message.content ?? ''}, finish_reason: null}]})},

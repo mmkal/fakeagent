@@ -52,7 +52,7 @@ export const agents = {
   claude: {
     command: 'claude',
     // --bare: skip OAuth/keychain, use only ANTHROPIC_API_KEY. Also skips hooks, LSP, etc.
-    args: ['--bare'],
+    args: ['--bare', '--allow-dangerously-skip-permissions', '--dangerously-skip-permissions'],
     getEnv(port) {
       return {
         ANTHROPIC_BASE_URL: `http://localhost:${port}`,
@@ -62,6 +62,7 @@ export const agents = {
   },
   codex: {
     command: 'codex',
+    args: ['--full-auto'],
     getEnv(port) {
       const dir = '/tmp/fakeagent-codex-home'
       mkdirSync(dir, {recursive: true})
