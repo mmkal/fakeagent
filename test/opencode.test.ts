@@ -1,6 +1,6 @@
 import {test, expect} from 'vitest'
-import {execSync, spawn} from 'node:child_process'
-import {createFakeAgent, matchers, responses} from '../src/index.ts'
+import {spawn} from 'node:child_process'
+import {createFakeAgent, responses} from '../src/index.ts'
 
 const catchAll = () => responses.openai.text('three')
 
@@ -18,7 +18,7 @@ test('opencode run hits fakeagent server and gets registered response', async ()
 
   const exitCode = await new Promise<number | null>((resolve, reject) => {
     const timer = setTimeout(() => {
-      child.kill('SIGKILL')
+      child.kill()
       reject(new Error(`Timed out.\nstdout: ${stdout}\nstderr: ${stderr.slice(-500)}`))
     }, 5_000)
     child.on('exit', (code) => {
@@ -32,10 +32,6 @@ test('opencode run hits fakeagent server and gets registered response', async ()
 }, 10_000)
 
 test('opencode TUI receives fakeagent response', async () => {
-  // Kill any leftover opencode processes from the previous test
-  try { execSync('pkill -9 -f "opencode"', {stdio: 'ignore'}) } catch {}
-  await new Promise((r) => setTimeout(r, 1000))
-
   await using api = await createFakeAgent({port: 0, fetch: catchAll})
 
   const {env} = api.getSpawnArgs('opencode')
@@ -58,7 +54,7 @@ test('opencode TUI receives fakeagent response', async () => {
 
   const exitCode = await new Promise<number | null>((resolve) => {
     const timer = setTimeout(() => {
-      child.kill('SIGKILL')
+      child.kill()
       resolve(-1)
     }, 15_000)
     child.on('exit', (code) => {

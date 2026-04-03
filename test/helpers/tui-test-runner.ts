@@ -15,6 +15,8 @@ let output = ''
 let resolveWait: () => void
 const waitDone = new Promise<void>((r) => (resolveWait = r))
 
+declare const Bun: any
+
 const proc = Bun.spawn(['opencode'], {
   terminal: {
     cols: 120,
@@ -35,6 +37,15 @@ const proc = Bun.spawn(['opencode'], {
   },
 })
 
+function gracefulKill() {
+  // Send Ctrl+C via the PTY so opencode can restore terminal state
+  try { proc.terminal!.write('\x03') } catch {}
+  // Follow up with SIGTERM after a short delay
+  setTimeout(() => {
+    try { proc.kill('SIGTERM') } catch {}
+  }, 500)
+}
+
 // Type after TUI renders
 setTimeout(() => proc.terminal!.write('hi'), 2000)
 // Submit: \n primes the textarea, then \r triggers submit
@@ -42,20 +53,19 @@ setTimeout(() => proc.terminal!.write(new Uint8Array([0x0a])), 2500)
 setTimeout(() => proc.terminal!.write(new Uint8Array([0x0d])), 3500)
 
 const timer = setTimeout(() => {
-  proc.kill()
+  gracefulKill()
   resolveWait()
 }, 10000)
 
-// Wait for "three" to appear OR process to exit
+// Wait for "three" to appear OR timeout
 await waitDone
 clearTimeout(timer)
 
-// Give a moment for remaining data to flush
+// Give a moment for remaining data to flush, then exit gracefully
 await Bun.sleep(200)
+gracefulKill()
+await Bun.sleep(500)
 
-try {
-  proc.kill()
-} catch {}
 try {
   proc.terminal!.close()
 } catch {}
@@ -66,3 +76,5 @@ const hasFakeModel = clean.includes('Fake Model')
 
 console.log(JSON.stringify({hasThree, hasFakeModel}))
 process.exit(hasThree ? 0 : 1)
+
+export {}
