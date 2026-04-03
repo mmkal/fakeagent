@@ -1,5 +1,6 @@
 import * as http from 'node:http'
 import {spawn as nodeSpawn, type ChildProcess, type SpawnOptions} from 'node:child_process'
+import {WebSocketServer, WebSocket} from 'ws'
 import {agents, type AgentName, type AgentConfig} from './agents.ts'
 
 export interface FakeAgent extends AsyncDisposable {
@@ -38,6 +39,29 @@ export const responses = {
       })
     },
   },
+  codex: {
+    /** Return an OpenAI Responses API response. Auto-converted to SSE when the client requests streaming. */
+    text(content: string): Response {
+      const id = `resp_fake_${Date.now()}`
+      const msgId = `msg_fake_${Date.now()}`
+      return Response.json({
+        id,
+        object: 'response',
+        created_at: Math.floor(Date.now() / 1000),
+        model: 'fake-model',
+        status: 'completed',
+        output: [{
+          type: 'message',
+          role: 'assistant',
+          id: msgId,
+          content: [{type: 'output_text', text: content}],
+        }],
+        usage: {input_tokens: 0, output_tokens: 0, total_tokens: 0},
+        error: null,
+        incomplete_details: null,
+      })
+    },
+  },
 }
 
 export interface ParsedProtocol {
@@ -49,6 +73,8 @@ export interface ParsedRequest {
   openai: ParsedProtocol | null
   /** Non-null if this is an Anthropic messages request (/v1/messages) */
   anthropic: ParsedProtocol | null
+  /** Non-null if this is an OpenAI Responses API request (/v1/responses) */
+  codex: ParsedProtocol | null
   /** Last user message from whichever protocol was detected */
   lastMessage: string
   /** Return a text response in the correct format for the detected protocol */
@@ -67,21 +93,27 @@ function extractText(content: any): string {
 export async function parseRequest(request: Request): Promise<ParsedRequest> {
   const text = await request.text()
   const body: any = text ? JSON.parse(text) : {}
-  const messages: Array<{role: string; content: any}> = body.messages ?? []
-
-  const lastUserMessage = [...messages].reverse().find((m) => m.role === 'user')
-  const lastMessage = lastUserMessage ? extractText(lastUserMessage.content) : ''
 
   const path = new URL(request.url).pathname
   const isAnthropic = path.includes('/v1/messages')
   const isOpenAI = path.includes('/v1/chat/completions')
+  const isCodex = path.includes('/v1/responses')
+
+  // Codex uses `input` (string or array), OpenAI/Anthropic use `messages`
+  const messages: Array<{role: string; content: any}> = isCodex
+    ? (typeof body.input === 'string' ? [{role: 'user', content: body.input}] : body.input ?? [])
+    : body.messages ?? []
+
+  const lastUserMessage = [...messages].reverse().find((m) => m.role === 'user')
+  const lastMessage = lastUserMessage ? extractText(lastUserMessage.content) : ''
 
   const protocol: ParsedProtocol = {lastMessage}
-  const respond = isAnthropic ? responses.anthropic : responses.openai
+  const respond = isAnthropic ? responses.anthropic : isCodex ? responses.codex : responses.openai
 
   return {
     openai: isOpenAI ? protocol : null,
     anthropic: isAnthropic ? protocol : null,
+    codex: isCodex ? protocol : null,
     lastMessage,
     respond,
     body,
@@ -124,7 +156,26 @@ function jsonToSSE(json: any): Response {
     ])
   }
 
-  // OpenAI Chat Completions format (has .choices)
+  // OpenAI Responses API format (has .object === 'response')
+  if (json.object === 'response') {
+    const content = json.output?.[0]?.content?.[0]?.text ?? ''
+    const msgId = json.output?.[0]?.id ?? `msg_fake_${Date.now()}`
+    const inProgressResponse = {...json, status: 'in_progress', output: []}
+    const completedResponse = json
+    return sseResponse([
+      {event: 'response.created', data: JSON.stringify({type: 'response.created', response: inProgressResponse})},
+      {event: 'response.in_progress', data: JSON.stringify({type: 'response.in_progress', response: inProgressResponse})},
+      {event: 'response.output_item.added', data: JSON.stringify({type: 'response.output_item.added', output_index: 0, item: {type: 'message', role: 'assistant', id: msgId, content: []}})},
+      {event: 'response.content_part.added', data: JSON.stringify({type: 'response.content_part.added', item_id: msgId, output_index: 0, content_index: 0, part: {type: 'output_text', text: ''}})},
+      {event: 'response.output_text.delta', data: JSON.stringify({type: 'response.output_text.delta', item_id: msgId, output_index: 0, content_index: 0, delta: content})},
+      {event: 'response.output_text.done', data: JSON.stringify({type: 'response.output_text.done', item_id: msgId, output_index: 0, content_index: 0, text: content})},
+      {event: 'response.content_part.done', data: JSON.stringify({type: 'response.content_part.done', item_id: msgId, output_index: 0, content_index: 0, part: {type: 'output_text', text: content}})},
+      {event: 'response.output_item.done', data: JSON.stringify({type: 'response.output_item.done', output_index: 0, item: {type: 'message', role: 'assistant', id: msgId, content: [{type: 'output_text', text: content}]}})},
+      {event: 'response.completed', data: JSON.stringify({type: 'response.completed', response: completedResponse})},
+    ])
+  }
+
+  // OpenAI Chat Completions format (fallback)
   const content = json.choices?.[0]?.message?.content ?? ''
   return sseResponse([
     {data: JSON.stringify({id: json.id, object: 'chat.completion.chunk', created: json.created, model: json.model, choices: [{index: 0, delta: {role: 'assistant', content}, finish_reason: null}]})},
@@ -183,6 +234,50 @@ export async function createFakeAgent(options: CreateFakeAgentOptions): Promise<
       res.writeHead(500, {'Content-Type': 'application/json'})
       res.end(JSON.stringify({error: {message: String(err)}}))
     }
+  })
+
+  // WebSocket support for codex (OpenAI Responses API uses WebSocket)
+  const wss = new WebSocketServer({noServer: true})
+  server.on('upgrade', (req, socket, head) => {
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      wss.emit('connection', ws, req)
+    })
+  })
+  wss.on('connection', (ws) => {
+    ws.on('message', async (data) => {
+      try {
+        const body = JSON.parse(data.toString())
+        // Build a fake Request so the fetch handler can parse it
+        const request = new Request('http://localhost/v1/responses', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(body),
+        })
+        const response = await options.fetch(request)
+        const json = await response.json() as any
+
+        // Send Responses API streaming events as individual WS messages
+        const content = json.output?.[0]?.content?.[0]?.text ?? ''
+        const msgId = json.output?.[0]?.id ?? `msg_fake_${Date.now()}`
+        const inProgressResponse = {...json, status: 'in_progress', output: []}
+        const events = [
+          {event: 'response.created', data: {type: 'response.created', response: inProgressResponse}},
+          {event: 'response.in_progress', data: {type: 'response.in_progress', response: inProgressResponse}},
+          {event: 'response.output_item.added', data: {type: 'response.output_item.added', output_index: 0, item: {type: 'message', role: 'assistant', id: msgId, content: []}}},
+          {event: 'response.content_part.added', data: {type: 'response.content_part.added', item_id: msgId, output_index: 0, content_index: 0, part: {type: 'output_text', text: ''}}},
+          {event: 'response.output_text.delta', data: {type: 'response.output_text.delta', item_id: msgId, output_index: 0, content_index: 0, delta: content}},
+          {event: 'response.output_text.done', data: {type: 'response.output_text.done', item_id: msgId, output_index: 0, content_index: 0, text: content}},
+          {event: 'response.content_part.done', data: {type: 'response.content_part.done', item_id: msgId, output_index: 0, content_index: 0, part: {type: 'output_text', text: content}}},
+          {event: 'response.output_item.done', data: {type: 'response.output_item.done', output_index: 0, item: {type: 'message', role: 'assistant', id: msgId, content: [{type: 'output_text', text: content}]}}},
+          {event: 'response.completed', data: {type: 'response.completed', response: json}},
+        ]
+        for (const e of events) {
+          ws.send(JSON.stringify(e.data))
+        }
+      } catch (err) {
+        ws.send(JSON.stringify({type: 'error', message: String(err)}))
+      }
+    })
   })
 
   const port = await new Promise<number>((resolve) => {
@@ -244,6 +339,7 @@ export async function createFakeAgent(options: CreateFakeAgentOptions): Promise<
       }
     },
     async [Symbol.asyncDispose]() {
+      wss.close()
       await new Promise<void>((resolve) => server.close(() => resolve()))
     },
   }

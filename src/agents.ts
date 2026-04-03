@@ -1,4 +1,5 @@
 import type {SpawnOptions} from 'node:child_process'
+import {mkdirSync, writeFileSync} from 'node:fs'
 
 export interface AgentConfig {
   command: string
@@ -54,6 +55,31 @@ export const agents = {
       return {
         ANTHROPIC_BASE_URL: `http://localhost:${port}`,
         ANTHROPIC_API_KEY: 'fake-key',
+      }
+    },
+  },
+  codex: {
+    command: 'codex',
+    getEnv(port) {
+      const dir = '/tmp/fakeagent-codex-home'
+      mkdirSync(dir, {recursive: true})
+      // Trust the cwd so codex skips the trust/onboarding prompts
+      const cwd = process.cwd()
+      writeFileSync(`${dir}/config.toml`, [
+        `model = "gpt-5.4"`,
+        `openai_base_url = "http://localhost:${port}/v1"`,
+        `check_for_update_on_startup = false`,
+        ``,
+        `[projects."${cwd}"]`,
+        `trust_level = "trusted"`,
+        ``,
+        `[projects."/tmp/fakeagent-test"]`,
+        `trust_level = "trusted"`,
+      ].join('\n') + '\n')
+      writeFileSync(`${dir}/auth.json`, JSON.stringify({OPENAI_API_KEY: 'fake-key'}))
+      return {
+        CODEX_API_KEY: 'fake-key',
+        CODEX_HOME: dir,
       }
     },
   },

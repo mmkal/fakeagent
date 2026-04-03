@@ -4,10 +4,12 @@
 //   PTY_COMMAND: command to spawn (required)
 //   PTY_ARGS: JSON array of args (default: "[]")
 //   PTY_INPUT: text to type (default: "hi")
-//   PTY_SUBMIT: how to submit — "cr" (just \r), "lf-cr" (\n then \r), or raw bytes as hex (default: "cr")
+//   PTY_SUBMIT: how to submit — "cr" (just \r), "lf-cr" (\n then \r) (default: "cr")
 //   PTY_WAIT_FOR: string to wait for in output (required)
 //   PTY_DELAY: ms to wait before typing (default: "3000")
 //   PTY_TIMEOUT: ms before giving up (default: "10000")
+//   PTY_DISMISS: number of Enter presses to send before typing (to dismiss startup prompts) (default: "0")
+//   PTY_DISMISS_INTERVAL: ms between dismiss presses (default: "1000")
 
 const command = process.env.PTY_COMMAND!
 if (!command) {
@@ -20,6 +22,8 @@ const submitMode = process.env.PTY_SUBMIT ?? 'cr'
 const waitFor = process.env.PTY_WAIT_FOR!
 const delay = parseInt(process.env.PTY_DELAY ?? '3000')
 const timeout = parseInt(process.env.PTY_TIMEOUT ?? '10000')
+const dismissCount = parseInt(process.env.PTY_DISMISS ?? '0')
+const dismissInterval = parseInt(process.env.PTY_DISMISS_INTERVAL ?? '1000')
 
 let output = ''
 let resolveWait: () => void
@@ -45,16 +49,23 @@ function gracefulKill() {
   setTimeout(() => { try { proc.kill('SIGTERM') } catch {} }, 500)
 }
 
-// Type after TUI renders
-setTimeout(() => proc.terminal!.write(input), delay)
+// Dismiss startup prompts (Enter presses before typing)
+let inputDelay = delay
+for (let i = 0; i < dismissCount; i++) {
+  const t = delay + i * dismissInterval
+  setTimeout(() => proc.terminal!.write('\r'), t)
+  inputDelay = t + dismissInterval
+}
+
+// Type after prompts dismissed
+setTimeout(() => proc.terminal!.write(input), inputDelay)
 
 // Submit
 if (submitMode === 'lf-cr') {
-  setTimeout(() => proc.terminal!.write(new Uint8Array([0x0a])), delay + 500)
-  setTimeout(() => proc.terminal!.write(new Uint8Array([0x0d])), delay + 1500)
+  setTimeout(() => proc.terminal!.write(new Uint8Array([0x0a])), inputDelay + 500)
+  setTimeout(() => proc.terminal!.write(new Uint8Array([0x0d])), inputDelay + 1500)
 } else {
-  // default: cr
-  setTimeout(() => proc.terminal!.write('\r'), delay + 500)
+  setTimeout(() => proc.terminal!.write('\r'), inputDelay + 500)
 }
 
 const timer = setTimeout(() => {
