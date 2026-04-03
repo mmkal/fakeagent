@@ -1,16 +1,13 @@
 import {test, expect} from 'vitest'
-import {spawn, execSync} from 'node:child_process'
-import {getFakeAgentApi} from '../src/api'
+import {execSync, spawn} from 'node:child_process'
+import {getFakeAgentApi} from '../src/api.ts'
 
 test('opencode run hits fakeagent server and gets registered response', async () => {
   await using api = await getFakeAgentApi({port: 0})
 
   api.register(/.*/, () => api.responses.openai.text('three'))
 
-  const {command, env, spawnOptions} = api.getSpawnArgs('opencode')
-  const child = spawn(command, ['run', 'what is one plus two', '--format', 'json', '--pure'], {
-    ...spawnOptions,
-    env: {...process.env, ...env},
+  const child = api.spawn('opencode', ['run', 'what is one plus two', '--format', 'json', '--pure'], {
     cwd: '/tmp/fakeagent-test',
   })
 

@@ -1,8 +1,8 @@
 import {test, expect} from 'vitest'
-import {getFakeAgentApi} from '../src/api'
+import {getFakeAgentApi} from '../src/api.ts'
 
 test('responds to registered pattern with openai text response', async () => {
-  await using api = await getFakeAgentApi({port: 0}) // port 0 = random available port
+  await using api = await getFakeAgentApi({port: 0})
 
   api.register(/one plus two/, () => api.responses.openai.text('three'))
 
@@ -49,7 +49,6 @@ test('matches against concatenated message content', async () => {
 test('unmatched request returns error', async () => {
   await using api = await getFakeAgentApi({port: 0})
 
-  // Register nothing — all requests should fail
   const response = await fetch(`http://localhost:${api.port}/v1/chat/completions`, {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
@@ -87,22 +86,15 @@ test('first matching handler wins', async () => {
   })
 })
 
-test('getAgentEnv returns correct env for opencode', async () => {
-  await using api = await getFakeAgentApi({port: 0})
-
-  const env = api.getAgentEnv('opencode')
-  expect(env.OPENCODE_CONFIG_CONTENT).toBeDefined()
-
-  const config = JSON.parse(env.OPENCODE_CONFIG_CONTENT!)
-  expect(config.provider.fakeagent.api).toBe(`http://localhost:${api.port}/v1`)
-  expect(config.model).toBe('fakeagent/fake-model')
-})
-
 test('getSpawnArgs returns command and env for agent', async () => {
   await using api = await getFakeAgentApi({port: 0})
 
-  const spawn = api.getSpawnArgs('opencode')
-  expect(spawn.command).toBe('opencode')
-  expect(spawn.env.OPENCODE_CONFIG_CONTENT).toBeDefined()
-  expect(spawn.env.ANTHROPIC_API_KEY).toBe('fake-key')
+  const spawnArgs = api.getSpawnArgs('opencode')
+  expect(spawnArgs.command).toBe('opencode')
+  expect(spawnArgs.env.OPENCODE_CONFIG_CONTENT).toBeDefined()
+  expect(spawnArgs.env.ANTHROPIC_API_KEY).toBe('fake-key')
+
+  const config = JSON.parse(spawnArgs.env.OPENCODE_CONFIG_CONTENT!)
+  expect(config.provider.fakeagent.api).toBe(`http://localhost:${api.port}/v1`)
+  expect(config.model).toBe('fakeagent/fake-model')
 })

@@ -1,13 +1,14 @@
 import * as http from 'node:http'
-import type {SpawnOptions} from 'node:child_process'
-import {agents, type AgentName} from './agents'
+import {spawn as nodeSpawn, type ChildProcess, type SpawnOptions} from 'node:child_process'
+import {agents, type AgentName, type AgentConfig} from './agents.ts'
 
 export interface FakeAgentApi extends AsyncDisposable {
   port: number
   register(pattern: RegExp, handler: () => OpenAIResponse): void
   responses: typeof responses
-  getAgentEnv(agent: AgentName): Record<string, string>
+  spawn(agent: AgentName, args?: string[], options?: SpawnOptions): ChildProcess
   getSpawnArgs(agent: AgentName): {command: string; args: string[]; env: Record<string, string>; spawnOptions: SpawnOptions}
+  createCli(): {run(argv?: string[]): ChildProcess}
 }
 
 export interface OpenAIResponse {
@@ -124,23 +125,60 @@ export async function getFakeAgentApi(options: {port?: number} = {}): Promise<Fa
     })
   })
 
+  function getSpawnArgs(agent: AgentName) {
+    const agentConfig: AgentConfig = agents[agent]
+    return {
+      command: agentConfig.command,
+      args: agentConfig.args ?? [],
+      env: agentConfig.getEnv(port),
+      spawnOptions: agentConfig.spawnOptions ?? {},
+    }
+  }
+
+  function spawnAgent(agent: AgentName, args?: string[], options?: SpawnOptions): ChildProcess {
+    const config = getSpawnArgs(agent)
+    return nodeSpawn(config.command, [...config.args, ...(args ?? [])], {
+      ...config.spawnOptions,
+      ...options,
+      env: {...process.env, ...config.env, ...options?.env},
+    })
+  }
+
   return {
     port,
     responses,
     register(pattern, handler) {
       handlers.push({pattern, handler})
     },
-    getAgentEnv(agent) {
-      const agentConfig = agents[agent]
-      return agentConfig.getEnv(port)
-    },
-    getSpawnArgs(agent) {
-      const agentConfig = agents[agent]
+    spawn: spawnAgent,
+    getSpawnArgs,
+    createCli() {
       return {
-        command: agentConfig.command,
-        args: agentConfig.args ?? [],
-        env: agentConfig.getEnv(port),
-        spawnOptions: agentConfig.spawnOptions ?? {},
+        run(argv?: string[]) {
+          const args = argv ?? process.argv.slice(2)
+          const agentName = args[0] as AgentName
+          if (!agentName || !agents[agentName]) {
+            const available = Object.keys(agents).join(', ')
+            console.error(`Usage: <script> <agent> [args...]\nAvailable agents: ${available}`)
+            process.exit(1)
+          }
+          const child = spawnAgent(agentName, args.slice(1), {stdio: 'inherit'})
+
+          // Forward signals and clean up on exit
+          const onSignal = (sig: NodeJS.Signals) => {
+            child.kill(sig)
+          }
+          process.on('SIGINT', onSignal)
+          process.on('SIGTERM', onSignal)
+          child.on('exit', (code) => {
+            process.off('SIGINT', onSignal)
+            process.off('SIGTERM', onSignal)
+            server.close()
+            process.exit(code ?? 1)
+          })
+
+          return child
+        },
       }
     },
     async [Symbol.asyncDispose]() {
