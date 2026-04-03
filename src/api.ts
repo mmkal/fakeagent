@@ -40,15 +40,15 @@ export const responses = {
   },
 }
 
-interface Matchable {
-  matches(pattern: RegExp): boolean
+export interface ParsedProtocol {
+  lastMessage: string
 }
 
 export interface ParsedRequest {
   /** Non-null if this is an OpenAI chat completion request (/v1/chat/completions) */
-  openaiChat: Matchable | null
+  openai: ParsedProtocol | null
   /** Non-null if this is an Anthropic messages request (/v1/messages) */
-  anthropicMessages: Matchable | null
+  anthropic: ParsedProtocol | null
   /** The raw parsed body */
   body: any
 }
@@ -64,18 +64,18 @@ export async function parseRequest(request: Request): Promise<ParsedRequest> {
   const body: any = text ? JSON.parse(text) : {}
   const messages: Array<{role: string; content: any}> = body.messages ?? []
 
-  const concatenated = messages.map((m) => `${m.role}: ${extractText(m.content)}`).join('\n')
+  const lastUserMessage = [...messages].reverse().find((m) => m.role === 'user')
+  const lastMessage = lastUserMessage ? extractText(lastUserMessage.content) : ''
 
-  // Detect protocol from URL path
   const path = new URL(request.url).pathname
   const isAnthropic = path.includes('/v1/messages')
   const isOpenAI = path.includes('/v1/chat/completions')
 
-  const systemPrefix = body.system ? `system: ${extractText(body.system)}\n` : ''
+  const protocol: ParsedProtocol = {lastMessage}
 
   return {
-    openaiChat: isOpenAI ? {matches: (pattern) => pattern.test(concatenated)} : null,
-    anthropicMessages: isAnthropic ? {matches: (pattern) => pattern.test(systemPrefix + concatenated)} : null,
+    openai: isOpenAI ? protocol : null,
+    anthropic: isAnthropic ? protocol : null,
     body,
   }
 }
@@ -126,17 +126,10 @@ function jsonToSSE(json: any): Response {
 }
 
 export async function createFakeAgent(options: CreateFakeAgentOptions): Promise<FakeAgent> {
-  const fs = await import('node:fs')
-  fs.writeFileSync('/tmp/fakeagent-debug.log', `[fakeagent] server starting\n`)
-  const debugLog = (msg: string) => fs.appendFileSync('/tmp/fakeagent-debug.log', msg + '\n')
-
   const server = http.createServer(async (req, res) => {
     try {
-      debugLog(`\n--- ${req.method} ${req.url} ---`)
-
       // Health check — claude sends HEAD / on startup
       if (req.method === 'HEAD') {
-        debugLog('-> 200 (health check)')
         res.writeHead(200)
         res.end()
         return
@@ -148,8 +141,6 @@ export async function createFakeAgent(options: CreateFakeAgentOptions): Promise<
         req.on('data', (chunk: string) => (data += chunk))
         req.on('end', () => resolve(data))
       })
-      debugLog(`body (first 200): ${body.slice(0, 200)}`)
-
       const url = `http://localhost${req.url}`
       const request = new Request(url, {
         method: req.method,
@@ -158,7 +149,6 @@ export async function createFakeAgent(options: CreateFakeAgentOptions): Promise<
       })
 
       let response = await options.fetch(request)
-      debugLog(`fetch returned: status=${response.status} ct=${response.headers.get('content-type')}`)
 
       // Auto-convert JSON responses to SSE when the client requested streaming.
       // This lets fetch handlers return plain responses.openai.text() or responses.anthropic.text()
@@ -167,29 +157,21 @@ export async function createFakeAgent(options: CreateFakeAgentOptions): Promise<
       const isJsonResponse = response.headers.get('content-type')?.includes('application/json')
       if (isStreamRequest && isJsonResponse && response.ok) {
         const json = await response.json() as any
-        debugLog(`converting to SSE: type=${json.type ?? 'openai'}`)
         response = jsonToSSE(json)
       }
 
       // Convert standard Response back to node response
-      const headers = Object.fromEntries(response.headers.entries())
-      debugLog(`-> ${response.status} ${JSON.stringify(headers)}`)
-      res.writeHead(response.status, headers)
+      res.writeHead(response.status, Object.fromEntries(response.headers.entries()))
       if (response.body) {
         const reader = response.body.getReader()
-        let totalBytes = 0
         while (true) {
           const {done, value} = await reader.read()
           if (done) break
-          totalBytes += value?.length ?? 0
           res.write(value)
         }
-        debugLog(`streamed ${totalBytes} bytes`)
       }
       res.end()
-      debugLog('response complete')
     } catch (err) {
-      debugLog(`ERROR: ${err}`)
       res.writeHead(500, {'Content-Type': 'application/json'})
       res.end(JSON.stringify({error: {message: String(err)}}))
     }

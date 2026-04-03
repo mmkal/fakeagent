@@ -6,7 +6,7 @@ test('responds to registered pattern with openai text response', async () => {
     port: 0,
     async fetch(request) {
       const parsed = await parseRequest(request)
-      if (parsed.openaiChat?.matches(/one plus two/)) {
+      if (parsed.openai?.lastMessage.match(/one plus two/)) {
         return responses.openai.text('three')
       }
       return Response.json({error: {message: 'unmatched'}}, {status: 400})
@@ -29,12 +29,12 @@ test('responds to registered pattern with openai text response', async () => {
   })
 })
 
-test('matches against concatenated message content', async () => {
+test('matches against last user message only', async () => {
   await using api = await createFakeAgent({
     port: 0,
     async fetch(request) {
       const parsed = await parseRequest(request)
-      if (parsed.openaiChat?.matches(/system.*user.*hello/s)) {
+      if (parsed.openai?.lastMessage.match(/hello/)) {
         return responses.openai.text('hi there')
       }
       return Response.json({error: {message: 'unmatched'}}, {status: 400})
@@ -91,7 +91,7 @@ test('fetch handler has access to full request body', async () => {
     async fetch(request) {
       const parsed = await parseRequest(request)
       capturedModel = parsed.body.model
-      if (parsed.openaiChat?.matches(/hello/)) {
+      if (parsed.openai?.lastMessage.match(/hello/)) {
         return responses.openai.text('first')
       }
       return responses.openai.text('fallback')
@@ -112,12 +112,12 @@ test('fetch handler has access to full request body', async () => {
   expect(capturedModel).toBe('gpt-test')
 })
 
-test('anthropicMessages matches with top-level system field', async () => {
+test('anthropic lastMessage matches last user message', async () => {
   await using api = await createFakeAgent({
     port: 0,
     async fetch(request) {
       const parsed = await parseRequest(request)
-      if (parsed.anthropicMessages?.matches(/system.*careful.*user.*hello/s)) {
+      if (parsed.anthropic?.lastMessage.match(/hello/)) {
         return responses.anthropic.text('matched')
       }
       return Response.json({error: {message: 'unmatched'}}, {status: 400})
@@ -149,8 +149,8 @@ test('parseRequest detects protocol from URL path', async () => {
       const parsed = await parseRequest(request)
       // Return which protocol was detected so we can assert from outside
       return Response.json({
-        openaiChat: parsed.openaiChat !== null,
-        anthropicMessages: parsed.anthropicMessages !== null,
+        openai: parsed.openai !== null,
+        anthropic: parsed.anthropic !== null,
       })
     },
   })
@@ -160,14 +160,14 @@ test('parseRequest detects protocol from URL path', async () => {
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({model: 'claude', messages: [{role: 'user', content: 'hi'}]}),
   })
-  expect(await anthropicRes.json()).toMatchObject({openaiChat: false, anthropicMessages: true})
+  expect(await anthropicRes.json()).toMatchObject({openai: false, anthropic: true})
 
   const openaiRes = await fetch(`http://localhost:${api.port}/v1/chat/completions`, {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({model: 'gpt', messages: [{role: 'user', content: 'hi'}]}),
   })
-  expect(await openaiRes.json()).toMatchObject({openaiChat: true, anthropicMessages: false})
+  expect(await openaiRes.json()).toMatchObject({openai: true, anthropic: false})
 })
 
 test('dual-protocol handler returns correct format per protocol', async () => {
@@ -175,8 +175,8 @@ test('dual-protocol handler returns correct format per protocol', async () => {
     port: 0,
     async fetch(request) {
       const parsed = await parseRequest(request)
-      if (parsed.openaiChat?.matches(/hi/)) return responses.openai.text('openai-response')
-      if (parsed.anthropicMessages?.matches(/hi/)) return responses.anthropic.text('anthropic-response')
+      if (parsed.openai?.lastMessage.match(/hi/)) return responses.openai.text('openai-response')
+      if (parsed.anthropic?.lastMessage.match(/hi/)) return responses.anthropic.text('anthropic-response')
       return Response.json({error: 'no match'}, {status: 400})
     },
   })
@@ -196,6 +196,45 @@ test('dual-protocol handler returns correct format per protocol', async () => {
   })
   const openaiData = await openaiRes.json()
   expect(openaiData).toMatchObject({choices: [{message: {content: 'openai-response'}}]})
+})
+
+test('matches only matches the last user message, not conversation history', async () => {
+  await using api = await createFakeAgent({
+    port: 0,
+    async fetch(request) {
+      const parsed = await parseRequest(request)
+      if (parsed.anthropic?.lastMessage.match(/one plus two/)) {
+        return responses.anthropic.text('three')
+      }
+      return Response.json({error: {message: 'no match'}}, {status: 400})
+    },
+  })
+
+  // First turn: "one plus two" matches
+  const res1 = await fetch(`http://localhost:${api.port}/v1/messages`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      model: 'claude',
+      messages: [{role: 'user', content: 'one plus two'}],
+    }),
+  })
+  expect(res1.status).toBe(200)
+
+  // Second turn: "hello" should NOT match, even though history contains "one plus two"
+  const res2 = await fetch(`http://localhost:${api.port}/v1/messages`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      model: 'claude',
+      messages: [
+        {role: 'user', content: 'one plus two'},
+        {role: 'assistant', content: 'three'},
+        {role: 'user', content: 'hello'},
+      ],
+    }),
+  })
+  expect(res2.status).toBe(400)
 })
 
 test('getSpawnArgs returns command and env for agent', async () => {
