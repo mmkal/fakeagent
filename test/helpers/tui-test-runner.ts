@@ -15,8 +15,6 @@ let output = ''
 let resolveWait: () => void
 const waitDone = new Promise<void>((r) => (resolveWait = r))
 
-declare const Bun: any
-
 const proc = Bun.spawn(['opencode'], {
   terminal: {
     cols: 120,

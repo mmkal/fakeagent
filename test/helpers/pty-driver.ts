@@ -64,3 +64,5 @@ try {
   proc.terminal!.close()
 } catch {}
 process.exit(proc.exitCode ?? 0)
+
+export {}
