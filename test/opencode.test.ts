@@ -1,6 +1,6 @@
 import {test, expect} from 'vitest'
 import {createFakeAgent, parseRequest} from '../src/index.ts'
-import {waitForExit, runTuiTest} from './helpers/index.ts'
+import {waitForExit, spawnTui} from './helpers/index.ts'
 
 test('opencode run hits fakeagent server and gets registered response', async () => {
   await using api = await createFakeAgent({
@@ -28,10 +28,7 @@ test('opencode TUI receives fakeagent response', async () => {
     },
   })
 
-  const result = await runTuiTest(api, 'opencode', {
-    waitFor: 'three',
-    submit: 'lf-cr',
-  })
-
-  expect(result.found).toBe(true)
+  await using tui = await spawnTui(api, 'opencode', {submit: 'lf-cr'})
+  await tui.send('what is one plus two')
+  await tui.waitFor('three')
 }, 20_000)

@@ -1,6 +1,6 @@
 import {test, expect} from 'vitest'
 import {createFakeAgent, parseRequest} from '../src/index.ts'
-import {waitForExit, runTuiTest} from './helpers/index.ts'
+import {waitForExit, spawnTui} from './helpers/index.ts'
 
 test('codex exec hits fakeagent server and gets registered response', async () => {
   await using api = await createFakeAgent({
@@ -28,12 +28,9 @@ test('codex TUI receives fakeagent response', async () => {
     },
   })
 
-  const result = await runTuiTest(api, 'codex', {
-    waitFor: 'three',
-    dismiss: 3,
-    delay: 4000,
-    timeout: 15_000,
-  })
-
-  expect(result.found).toBe(true)
+  await using tui = await spawnTui(api, 'codex')
+  // Wait for codex TUI to be ready (shows the Codex banner)
+  await tui.waitFor('OpenAI Codex')
+  await tui.send('what is one plus two')
+  await tui.waitFor('three')
 }, 25_000)

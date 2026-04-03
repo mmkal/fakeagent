@@ -1,5 +1,5 @@
 import type {SpawnOptions} from 'node:child_process'
-import {mkdirSync, writeFileSync} from 'node:fs'
+import {mkdirSync, writeFileSync, realpathSync} from 'node:fs'
 
 export interface AgentConfig {
   command: string
@@ -63,18 +63,16 @@ export const agents = {
     getEnv(port) {
       const dir = '/tmp/fakeagent-codex-home'
       mkdirSync(dir, {recursive: true})
-      // Trust the cwd so codex skips the trust/onboarding prompts
-      const cwd = process.cwd()
+      // Trust the cwd and /tmp/fakeagent-test so codex skips trust/onboarding prompts.
+      // Use realpathSync because macOS resolves /tmp → /private/tmp and codex checks the resolved path.
+      const cwd = realpathSync(process.cwd())
+      const tmpTest = realpathSync('/tmp/fakeagent-test')
+      const trustedPaths = [...new Set([cwd, tmpTest])]
       writeFileSync(`${dir}/config.toml`, [
         `model = "gpt-5.4"`,
         `openai_base_url = "http://localhost:${port}/v1"`,
         `check_for_update_on_startup = false`,
-        ``,
-        `[projects."${cwd}"]`,
-        `trust_level = "trusted"`,
-        ``,
-        `[projects."/tmp/fakeagent-test"]`,
-        `trust_level = "trusted"`,
+        ...trustedPaths.flatMap((p) => ['', `[projects."${p}"]`, `trust_level = "trusted"`]),
       ].join('\n') + '\n')
       writeFileSync(`${dir}/auth.json`, JSON.stringify({OPENAI_API_KEY: 'fake-key'}))
       return {
