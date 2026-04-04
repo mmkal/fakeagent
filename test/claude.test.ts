@@ -37,7 +37,9 @@ test('claude TUI tool use', async () => {
   await using api = await createFakeAgent({
     async fetch(request) {
       const parsed = await parseRequest(request)
-      if (parsed.systemPrompt.match(/title/i)) return parsed.respond.text('{"title": "Test"}')
+      if (parsed.systemPrompt.match(/Generate a ?.* title/)) {
+        return parsed.respond.text('{"title": "Test"}')
+      }
       const hasToolResult = parsed.body.messages?.some((m: any) =>
         Array.isArray(m.content) && m.content.some((c: any) => c.type === 'tool_result'),
       )
