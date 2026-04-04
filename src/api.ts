@@ -123,7 +123,9 @@ export interface ParsedRequest {
   codex: ParsedProtocol | null
   /** Last user message from whichever protocol was detected */
   lastMessage: string
-  /** Whether this request includes tool definitions (false for title generation, summaries, etc.) */
+  /** System prompt / instructions text */
+  systemPrompt: string
+  /** Whether this request includes tool definitions */
   hasTools: boolean
   /** Return a response in the correct format for the detected protocol */
   respond: {
@@ -173,6 +175,11 @@ export async function parseRequest(request: Request): Promise<ParsedRequest> {
         : responses.openai.toolCall(name, args),
   }
 
+  // System prompt location differs by protocol
+  const systemPrompt = isAnthropic ? extractText(body.system)
+    : isCodex ? (body.instructions ?? '')
+    : extractText(messages.filter((m) => m.role === 'system' || m.role === 'developer').map((m) => m.content).join('\n'))
+
   const hasTools = (body.tools?.length ?? 0) > 0
 
   return {
@@ -180,6 +187,7 @@ export async function parseRequest(request: Request): Promise<ParsedRequest> {
     anthropic: isAnthropic ? protocol : null,
     codex: isCodex ? protocol : null,
     lastMessage,
+    systemPrompt,
     hasTools,
     respond,
     body,
